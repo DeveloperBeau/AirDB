@@ -39,6 +39,19 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_lib.step);
     test_step.dependOn(&run_int.step);
 
+    // Inward-dependency architecture test. It reads src/ at run time, so it runs
+    // from the repo root and is never cached.
+    const arch_mod = b.createModule(.{
+        .root_source_file = b.path("tests/architectureTest.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const arch_tests = b.addTest(.{ .root_module = arch_mod });
+    const run_arch = b.addRunArtifact(arch_tests);
+    run_arch.setCwd(b.path("."));
+    run_arch.has_side_effects = true;
+    test_step.dependOn(&run_arch.step);
+
     // Standalone performance harness. Not part of `test` so CI stays fast.
     const bench_mod = b.createModule(.{
         .root_source_file = b.path("bench/main.zig"),
