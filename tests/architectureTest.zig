@@ -69,26 +69,7 @@ fn loadSourceTree(gpa: Allocator) !SourceTree {
     var unresolved: std.ArrayList(Unresolved) = .empty;
     for (paths.items) |path| {
         const bytes = try cwd.readFileAlloc(io, path, allocator, .unlimited);
-        const imports = try ImportScanner.parse(allocator, bytes);
-        for (imports) |site| {
-            const resolution = try ImportScanner.resolve(allocator, path, site.argument, &RingTable.ignoredModuleNames);
-            switch (resolution) {
-                .file => |target| try edges.append(allocator, .{ .from = path, .to = target, .line = site.line }),
-                .testFile, .ignoredModule => {},
-                .escapesSource => try unresolved.append(allocator, .{
-                    .from = path,
-                    .line = site.line,
-                    .argument = site.argument,
-                    .reason = "path leaves src/",
-                }),
-                .unknownModule => try unresolved.append(allocator, .{
-                    .from = path,
-                    .line = site.line,
-                    .argument = site.argument,
-                    .reason = "named module is not in ignoredModuleNames",
-                }),
-            }
-        }
+        try recordFile(allocator, &edges, &unresolved, path, bytes, &RingTable.ignoredModuleNames);
     }
 
     return .{
@@ -107,25 +88,69 @@ fn ringNumber(ring: ?Ring) u8 {
     return if (ring) |known| @intFromEnum(known) else 0;
 }
 
-// Gate tests over the real tree.
+/// Records one resolved import as a file edge, or as a site the check must fail.
+/// The real-tree gate and the fixture tests both go through here.
+fn recordImport(
+    allocator: Allocator,
+    edges: *std.ArrayList(Edge),
+    unresolved: *std.ArrayList(Unresolved),
+    from: []const u8,
+    site: ImportScanner.Import,
+    resolution: ImportScanner.Resolution,
+) Allocator.Error!void {
+    const reason: []const u8 = switch (resolution) {
+        .file => |target| return edges.append(allocator, .{ .from = from, .to = target, .line = site.line }),
+        .ignoredModule => return,
+        // Parse skips test blocks, so any test file it returns sits in production code.
+        .testFile => "test file imported outside a test block",
+        .escapesSource => "path leaves src/",
+        .unknownModule => "named module is not in ignoredModuleNames",
+    };
+    try unresolved.append(allocator, .{
+        .from = from,
+        .line = site.line,
+        .argument = site.argument,
+        .reason = reason,
+    });
+}
 
-test "every production import in src points inward under the ring table" {
-    var tree = try loadSourceTree(testing.allocator);
-    defer tree.deinit();
+/// Parses one file, resolves each import and records it. Paths and strings borrow from `bytes` and `path`.
+fn recordFile(
+    allocator: Allocator,
+    edges: *std.ArrayList(Edge),
+    unresolved: *std.ArrayList(Unresolved),
+    path: []const u8,
+    bytes: []const u8,
+    ignoredNames: []const []const u8,
+) Allocator.Error!void {
+    const imports = try ImportScanner.parse(allocator, bytes);
+    for (imports) |site| {
+        const resolution = try ImportScanner.resolve(allocator, path, site.argument, ignoredNames);
+        try recordImport(allocator, edges, unresolved, path, site, resolution);
+    }
+}
 
+/// Writes one line per unresolved site and per edge that breaks the ring rule.
+/// Returns InwardDependencyViolation when any line was written.
+fn checkInwardDependencies(
+    writer: *std.Io.Writer,
+    entries: []const RingTable.Entry,
+    allowed: []const RingTable.AllowedImport,
+    edges: []const Edge,
+    unresolved: []const Unresolved,
+) (std.Io.Writer.Error || error{InwardDependencyViolation})!void {
     var failures: usize = 0;
-    for (tree.unresolved) |site| {
-        std.debug.print("{s}:{d}: cannot check import \"{s}\": {s}\n", .{ site.from, site.line, site.argument, site.reason });
+    for (unresolved) |site| {
+        try writer.print("{s}:{d}: cannot check import \"{s}\": {s}\n", .{ site.from, site.line, site.argument, site.reason });
         failures += 1;
     }
-    for (tree.edges) |edge| {
-        const verdict = ImportScanner.classify(&RingTable.entries, &RingTable.allowedImports, edge.from, edge.to);
-        switch (verdict) {
+    for (edges) |edge| {
+        switch (ImportScanner.classify(entries, allowed, edge.from, edge.to)) {
             .allowed, .allowlisted => {},
             .violation, .unranked => {
-                const fromRing = ImportScanner.ringOf(&RingTable.entries, edge.from);
-                const toRing = ImportScanner.ringOf(&RingTable.entries, edge.to);
-                std.debug.print("{s}:{d}: {s} ({d}) imports {s} ({d}) {s}\n", .{
+                const fromRing = ImportScanner.ringOf(entries, edge.from);
+                const toRing = ImportScanner.ringOf(entries, edge.to);
+                try writer.print("{s}:{d}: {s} ({d}) imports {s} ({d}) {s}\n", .{
                     edge.from,
                     edge.line,
                     ringLabel(fromRing),
@@ -139,9 +164,23 @@ test "every production import in src points inward under the ring table" {
         }
     }
     if (failures > 0) {
-        std.debug.print("{d} import(s) break the inward-dependency rule. See tests/architecture/ringTable.zig.\n", .{failures});
+        try writer.print("{d} import(s) break the inward-dependency rule. See tests/architecture/ringTable.zig.\n", .{failures});
         return error.InwardDependencyViolation;
     }
+}
+
+// Gate tests over the real tree.
+
+test "every production import in src points inward under the ring table" {
+    var tree = try loadSourceTree(testing.allocator);
+    defer tree.deinit();
+
+    var report: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer report.deinit();
+    checkInwardDependencies(&report.writer, &RingTable.entries, &RingTable.allowedImports, tree.edges, tree.unresolved) catch |err| {
+        std.debug.print("{s}", .{report.written()});
+        return err;
+    };
 }
 
 test "every production file in src has exactly one ring and every table path exists" {
@@ -186,6 +225,42 @@ test "every allowlisted import still occurs in src" {
         }
         if (!occurs) {
             std.debug.print("{s} -> {s} no longer occurs. Remove it from allowedImports.\n", .{ pair.from, pair.to });
+            failures += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 0), failures);
+}
+
+// Allowlist ratchet. The list can only shrink, and each shrink edits the list and the cap together.
+
+test "allowlist length equals the pinned cap" {
+    if (RingTable.allowedImports.len != RingTable.allowedImportCap) {
+        std.debug.print("allowedImports has {d} entries but allowedImportCap is {d}. Lower the cap when an entry goes. Raise it only after review.\n", .{ RingTable.allowedImports.len, RingTable.allowedImportCap });
+    }
+    try testing.expectEqual(@as(usize, RingTable.allowedImportCap), RingTable.allowedImports.len);
+}
+
+test "allowlist entries are unique" {
+    var failures: usize = 0;
+    for (RingTable.allowedImports, 0..) |pair, index| {
+        for (RingTable.allowedImports[0..index]) |earlier| {
+            if (std.mem.eql(u8, earlier.from, pair.from) and std.mem.eql(u8, earlier.to, pair.to)) {
+                std.debug.print("{s} -> {s} is listed more than once in allowedImports\n", .{ pair.from, pair.to });
+                failures += 1;
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 0), failures);
+}
+
+test "every allowlist entry is a real violation under classify" {
+    const noAllowed = [_]RingTable.AllowedImport{};
+    var failures: usize = 0;
+    for (RingTable.allowedImports) |pair| {
+        const bare = ImportScanner.classify(&RingTable.entries, &noAllowed, pair.from, pair.to);
+        const listed = ImportScanner.classify(&RingTable.entries, &RingTable.allowedImports, pair.from, pair.to);
+        if (bare != .violation or listed != .allowlisted) {
+            std.debug.print("{s} -> {s} is {s} without the allowlist and {s} with it. Only a real violation may be allowlisted.\n", .{ pair.from, pair.to, @tagName(bare), @tagName(listed) });
             failures += 1;
         }
     }
@@ -353,6 +428,138 @@ test "scanner fails a sideways Infrastructure import unless allowlisted" {
     try testing.expectEqual(ImportScanner.Verdict.unranked, classify(&fixtureEntries, &fixtureAllowed, "src/database.zig", "src/storage/scratch.zig"));
 }
 
+test "scanner classifies an importer missing from the table as unranked" {
+    const noAllowed = [_]RingTable.AllowedImport{};
+    const classify = ImportScanner.classify;
+    try testing.expectEqual(ImportScanner.Verdict.unranked, classify(&fixtureEntries, &fixtureAllowed, "src/storage/scratch.zig", "src/platform.zig"));
+    try testing.expectEqual(ImportScanner.Verdict.unranked, classify(&fixtureEntries, &noAllowed, "src/storage/scratch.zig", "src/platform.zig"));
+
+    // An inward-looking target does not rescue an importer with no ring.
+    const verdicts = try verdictsFor(testing.allocator, "src/storage/scratch.zig",
+        \\const platform = @import("../platform.zig");
+        \\const reference = @import("reference.zig");
+        \\
+    );
+    defer testing.allocator.free(verdicts);
+    try testing.expectEqualSlices(ImportScanner.Verdict, &.{ .unranked, .unranked }, verdicts);
+}
+
+test "scanner skips the body of a quoted string" {
+    // An unskipped "}" would close the test block early and expose hidden.zig.
+    try expectArguments(
+        \\const node = @import("node.zig");
+        \\test {
+        \\    const text = "}";
+        \\    _ = @import("hidden.zig");
+        \\}
+        \\
+    , &.{"node.zig"});
+}
+
+// Check tests on in-memory files. They record and check through the same functions as the real-tree gate.
+
+/// One in-memory source file, keyed by its path from the repo root.
+const FixtureFile = struct { path: []const u8, bytes: []const u8 };
+
+/// Records every fixture file, runs the shared check and returns its report. Memory lives in `arena`.
+fn checkFixture(arena: *std.heap.ArenaAllocator, files: []const FixtureFile) !struct { failed: bool, report: []const u8 } {
+    const allocator = arena.allocator();
+    var edges: std.ArrayList(Edge) = .empty;
+    var unresolved: std.ArrayList(Unresolved) = .empty;
+    for (files) |file| {
+        try recordFile(allocator, &edges, &unresolved, file.path, file.bytes, &fixtureIgnored);
+    }
+    var report: std.Io.Writer.Allocating = .init(allocator);
+    checkInwardDependencies(&report.writer, &fixtureEntries, &fixtureAllowed, edges.items, unresolved.items) catch |err| switch (err) {
+        error.InwardDependencyViolation => return .{ .failed = true, .report = report.written() },
+        else => |other| return other,
+    };
+    return .{ .failed = false, .report = report.written() };
+}
+
+/// Expects the shared check to fail on `files` with a report that names `expected`.
+fn expectCheckFails(files: []const FixtureFile, expected: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const result = try checkFixture(&arena, files);
+    try testing.expect(result.failed);
+    if (std.mem.indexOf(u8, result.report, expected) == null) {
+        std.debug.print("expected \"{s}\" in the report:\n{s}", .{ expected, result.report });
+        return error.TestExpectedReport;
+    }
+}
+
+/// Expects the shared check to pass on `files` with an empty report.
+fn expectCheckPasses(files: []const FixtureFile) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const result = try checkFixture(&arena, files);
+    if (result.failed) std.debug.print("unexpected report:\n{s}", .{result.report});
+    try testing.expect(!result.failed);
+    try testing.expectEqual(@as(usize, 0), result.report.len);
+}
+
+test "an inward fixture passes the inward-dependency check" {
+    try expectCheckPasses(&.{
+        .{ .path = "src/trees/column.zig", .bytes =
+        \\const std = @import("std");
+        \\const reference = @import("../storage/reference.zig");
+        \\test {
+        \\    _ = @import("columnTests.zig");
+        \\}
+        \\
+        },
+        .{ .path = "src/storage/fileStore.zig", .bytes =
+        \\const platform = @import("../platform.zig");
+        \\
+        },
+    });
+}
+
+test "an import that leaves src fails the inward-dependency check" {
+    try expectCheckFails(&.{.{ .path = "src/database.zig", .bytes =
+        \\const build = @import("../build.zig");
+        \\
+    }}, "src/database.zig:1: cannot check import \"../build.zig\": path leaves src/");
+}
+
+test "an unknown module name in a scanned file fails the inward-dependency check" {
+    try expectCheckFails(&.{.{ .path = "src/database.zig", .bytes =
+        \\const std = @import("std");
+        \\const options = @import("build_options");
+        \\
+    }}, "src/database.zig:2: cannot check import \"build_options\": named module is not in ignoredModuleNames");
+}
+
+test "an unranked importer fails the inward-dependency check" {
+    try expectCheckFails(&.{.{ .path = "src/storage/scratch.zig", .bytes =
+        \\const platform = @import("../platform.zig");
+        \\
+    }}, "src/storage/scratch.zig:1: no ring (0) imports infrastructure (3) src/platform.zig");
+}
+
+test "an outward fixture import fails the inward-dependency check" {
+    try expectCheckFails(&.{.{ .path = "src/trees/column.zig", .bytes =
+        \\const platform = @import("../platform.zig");
+        \\
+    }}, "src/trees/column.zig:1: domain (2) imports infrastructure (3) src/platform.zig");
+}
+
+test "a production file importing a Tests.zig file outside a test block is flagged" {
+    try expectCheckFails(&.{.{ .path = "src/trees/column.zig", .bytes =
+        \\const tests = @import("columnTests.zig");
+        \\
+    }}, "src/trees/column.zig:1: cannot check import \"columnTests.zig\": test file imported outside a test block");
+
+    // The same import inside a test block is how production files pull in their tests.
+    try expectCheckPasses(&.{.{ .path = "src/trees/column.zig", .bytes =
+        \\test {
+        \\    _ = @import("columnTests.zig");
+        \\}
+        \\
+    }});
+}
+
 // Seeded fuzz test over generated files.
 
 /// One generated source fragment. Each "#" becomes a unique number.
@@ -467,6 +674,220 @@ test "scanner fuzz finds every real import and no hidden one" {
         if (mismatch) {
             std.debug.print("iteration {d}, source:\n{s}\n", .{ iteration, source.items });
             return error.ScannerFuzzMismatch;
+        }
+    }
+}
+
+// Seeded fuzz tests over classify and resolve.
+
+/// Returns true when the pair appears in `allowed`. Kept apart from isAllowlisted so the fuzz does not trust it.
+fn pairListed(allowed: []const RingTable.AllowedImport, from: []const u8, to: []const u8) bool {
+    for (allowed) |pair| {
+        if (std.mem.eql(u8, pair.from, from) and std.mem.eql(u8, pair.to, to)) return true;
+    }
+    return false;
+}
+
+/// True when the rule lets `from` import `to`, read straight from the Ring doc comment.
+fn pointsInward(from: RingTable.Entry, to: RingTable.Entry) bool {
+    const fromLevel = @intFromEnum(from.ring);
+    const toLevel = @intFromEnum(to.ring);
+    if (toLevel < fromLevel) return true;
+    if (toLevel > fromLevel) return false;
+    return from.ring != .infrastructure or std.mem.eql(u8, from.path, to.path);
+}
+
+/// Picks a random table entry that `from` may import when `inward` is true, or one it may not when false.
+fn pickTarget(random: std.Random, from: RingTable.Entry, inward: bool) ?RingTable.Entry {
+    var candidates: [RingTable.entries.len]RingTable.Entry = undefined;
+    var count: usize = 0;
+    for (RingTable.entries) |entry| {
+        if (pointsInward(from, entry) == inward) {
+            candidates[count] = entry;
+            count += 1;
+        }
+    }
+    if (count == 0) return null;
+    return candidates[random.uintLessThan(usize, count)];
+}
+
+/// Writes 1 to 6 random lowercase letters. Lowercase alone can never spell a Tests.zig suffix.
+fn appendName(allocator: Allocator, out: *std.ArrayList(u8), random: std.Random) !void {
+    const length = 1 + random.uintLessThan(usize, 6);
+    for (0..length) |_| try out.append(allocator, 'a' + random.uintLessThan(u8, 26));
+}
+
+fn appendSeparator(allocator: Allocator, out: *std.ArrayList(u8), random: std.Random) !void {
+    try out.append(allocator, if (random.uintLessThan(u8, 4) == 0) '\\' else '/');
+}
+
+test "classify fuzz allows every inward edge and flags every outward or sideways Infrastructure edge" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("classify fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    const entries = &RingTable.entries;
+    const allowed = &RingTable.allowedImports;
+    const noAllowed = [_]RingTable.AllowedImport{};
+    var unrankedBuffer: [64]u8 = undefined;
+
+    var iteration: usize = 0;
+    while (iteration < 400) : (iteration += 1) {
+        const from = entries[random.uintLessThan(usize, entries.len)];
+        switch (random.uintLessThan(u8, 3)) {
+            0 => {
+                // Every file can at least import itself, so an inward target always exists.
+                const to = pickTarget(random, from, true).?;
+                try testing.expectEqual(ImportScanner.Verdict.allowed, ImportScanner.classify(entries, &noAllowed, from.path, to.path));
+                try testing.expectEqual(ImportScanner.Verdict.allowed, ImportScanner.classify(entries, allowed, from.path, to.path));
+            },
+            1 => {
+                // Composition has nothing above it, so it has no outward target.
+                const to = pickTarget(random, from, false) orelse continue;
+                try testing.expectEqual(ImportScanner.Verdict.violation, ImportScanner.classify(entries, &noAllowed, from.path, to.path));
+                const expected: ImportScanner.Verdict = if (pairListed(allowed, from.path, to.path)) .allowlisted else .violation;
+                try testing.expectEqual(expected, ImportScanner.classify(entries, allowed, from.path, to.path));
+            },
+            else => {
+                const unranked = try std.fmt.bufPrint(&unrankedBuffer, "src/unranked/file{d}.zig", .{random.int(u32)});
+                const pairs = [_][2][]const u8{
+                    .{ unranked, from.path },
+                    .{ from.path, unranked },
+                    .{ unranked, unranked },
+                };
+                for (pairs) |pair| {
+                    try testing.expectEqual(ImportScanner.Verdict.unranked, ImportScanner.classify(entries, &noAllowed, pair[0], pair[1]));
+                    try testing.expectEqual(ImportScanner.Verdict.unranked, ImportScanner.classify(entries, allowed, pair[0], pair[1]));
+                }
+            },
+        }
+    }
+}
+
+test "resolve fuzz normalises paths under src and rejects every other target" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("resolve fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const ignored = &RingTable.ignoredModuleNames;
+
+    var iteration: usize = 0;
+    while (iteration < 400) : (iteration += 1) {
+        _ = arena.reset(.retain_capacity);
+        const allocator = arena.allocator();
+
+        const importer = RingTable.entries[random.uintLessThan(usize, RingTable.entries.len)].path;
+        var directory: std.ArrayList([]const u8) = .empty;
+        var parts = std.mem.tokenizeScalar(u8, importer, '/');
+        while (parts.next()) |part| try directory.append(allocator, part);
+        // Drop the file name. What is left starts with "src".
+        _ = directory.pop();
+        const depth = directory.items.len;
+
+        var argument: std.ArrayList(u8) = .empty;
+        const kind = random.uintLessThan(u8, 5);
+        switch (kind) {
+            0, 1 => {
+                // Climb at most to src, or to the root and back into src, then descend to a new file.
+                var expected: std.ArrayList(u8) = .empty;
+                const climbToRoot = random.uintLessThan(u8, 4) == 0;
+                const ups = if (climbToRoot) depth else random.uintLessThan(usize, depth);
+                for (0..ups) |_| {
+                    if (random.uintLessThan(u8, 4) == 0) {
+                        try argument.append(allocator, '.');
+                        try appendSeparator(allocator, &argument, random);
+                    }
+                    try argument.appendSlice(allocator, "..");
+                    try appendSeparator(allocator, &argument, random);
+                }
+                if (climbToRoot) {
+                    try argument.appendSlice(allocator, "src");
+                    try appendSeparator(allocator, &argument, random);
+                    try expected.appendSlice(allocator, "src");
+                } else {
+                    for (directory.items[0 .. depth - ups], 0..) |part, index| {
+                        if (index > 0) try expected.append(allocator, '/');
+                        try expected.appendSlice(allocator, part);
+                    }
+                }
+                for (0..random.uintLessThan(usize, 3)) |_| {
+                    const start = argument.items.len;
+                    try appendName(allocator, &argument, random);
+                    try expected.append(allocator, '/');
+                    try expected.appendSlice(allocator, argument.items[start..]);
+                    try appendSeparator(allocator, &argument, random);
+                }
+                const start = argument.items.len;
+                try appendName(allocator, &argument, random);
+                const testTarget = kind == 1;
+                try argument.appendSlice(allocator, if (testTarget) "Tests.zig" else ".zig");
+                try expected.append(allocator, '/');
+                try expected.appendSlice(allocator, argument.items[start..]);
+
+                const resolution = try ImportScanner.resolve(allocator, importer, argument.items, ignored);
+                if (testTarget) {
+                    try testing.expectEqual(ImportScanner.Resolution.testFile, resolution);
+                } else {
+                    if (resolution != .file) {
+                        std.debug.print("{s} imports \"{s}\": expected a file, got {s}\n", .{ importer, argument.items, @tagName(resolution) });
+                        return error.TestUnexpectedResolution;
+                    }
+                    try testing.expectEqualStrings(expected.items, resolution.file);
+                }
+            },
+            2 => {
+                switch (random.uintLessThan(u8, 4)) {
+                    0 => {
+                        // More ".." than the importer has directories.
+                        for (0..depth + 1 + random.uintLessThan(usize, 3)) |_| {
+                            try argument.appendSlice(allocator, "..");
+                            try appendSeparator(allocator, &argument, random);
+                        }
+                    },
+                    1 => {
+                        // Up to the repo root, then into a sibling of src.
+                        for (0..depth) |_| {
+                            try argument.appendSlice(allocator, "..");
+                            try appendSeparator(allocator, &argument, random);
+                        }
+                        if (random.boolean()) {
+                            try argument.appendSlice(allocator, "out");
+                            try appendName(allocator, &argument, random);
+                            try appendSeparator(allocator, &argument, random);
+                        }
+                    },
+                    2 => try appendSeparator(allocator, &argument, random),
+                    else => try argument.appendSlice(allocator, "C:/"),
+                }
+                try appendName(allocator, &argument, random);
+                try argument.appendSlice(allocator, if (random.boolean()) ".zig" else ".zon");
+                const resolution = try ImportScanner.resolve(allocator, importer, argument.items, ignored);
+                if (resolution != .escapesSource) {
+                    std.debug.print("{s} imports \"{s}\": expected escapesSource, got {s}\n", .{ importer, argument.items, @tagName(resolution) });
+                    return error.TestUnexpectedResolution;
+                }
+            },
+            3 => {
+                const name = ignored[random.uintLessThan(usize, ignored.len)];
+                try testing.expectEqual(ImportScanner.Resolution.ignoredModule, try ImportScanner.resolve(allocator, importer, name, ignored));
+            },
+            else => {
+                try appendName(allocator, &argument, random);
+                if (random.boolean()) try argument.append(allocator, '_');
+                // A random name may spell an ignored one, so a suffix keeps it unknown.
+                for (ignored) |name| {
+                    if (std.mem.eql(u8, name, argument.items)) try argument.appendSlice(allocator, "_x");
+                }
+                const resolution = try ImportScanner.resolve(allocator, importer, argument.items, ignored);
+                if (resolution != .unknownModule) {
+                    std.debug.print("{s} imports \"{s}\": expected unknownModule, got {s}\n", .{ importer, argument.items, @tagName(resolution) });
+                    return error.TestUnexpectedResolution;
+                }
+            },
         }
     }
 }

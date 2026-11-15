@@ -5,7 +5,8 @@
 
 /// Ring table for the inward-dependency rule, with its known exceptions.
 pub const RingTable = struct {
-    /// Dependency ring of a file. A file may import only from its own ring or a lower one.
+    /// Dependency ring of a file. A file may import from a lower ring, or from another file in the same ring.
+    /// Infrastructure is the exception. There a sideways import of a different file is banned unless the pair is allowlisted.
     pub const Ring = enum(u8) {
         entities = 1,
         domain = 2,
@@ -103,6 +104,9 @@ pub const RingTable = struct {
         .{ .from = "src/verification.zig", .to = "src/platform.zig", .reason = "Verification uses the sectionSize constant" },
         .{ .from = "src/storage/fileStore.zig", .to = "src/storage/syncer.zig", .reason = "FileStore takes Syncing, and a top-level FileSyncer import is used only by tests" },
     };
+
+    /// It is the pinned length of allowedImports, so lower it when an entry is removed and never raise it without review.
+    pub const allowedImportCap = 15;
 
     /// Named imports that are not files and are always allowed.
     pub const ignoredModuleNames = [_][]const u8{ "std", "builtin" };
