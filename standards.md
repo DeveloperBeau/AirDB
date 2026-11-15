@@ -44,7 +44,12 @@ The architecture test is part of `zig build test`. It fails in these cases:
 - An allowlist entry is stale or duplicated.
 - The allowlist length does not equal the cap.
 
-There is no hidden global state. Required dependencies are init arguments, with no default collaborators. Time, clock, random, network, file system, secrets and storage reach production code only through protocols or traits. Tests use doubles and do not call a real external service.
+Required dependencies are init arguments. Time, clock, random, network, file system, secrets and storage should reach production code through protocols or traits. New production code must not use a global io or a default collaborator to get them. Tests use doubles and do not call a real external service.
+
+Known gaps. These exceptions exist today. They are known and will be closed in later changes.
+
+- `Database.create` and `Database.open` default to `FileSyncer.any()`. `createWith` and `openWith` take the syncer explicitly.
+- `beginWriteLocked` calls `Io.Clock.now` directly to time the free list clone. It uses `std.Io.Threaded.global_single_threaded`, which is a global io.
 
 There is one recorded exception. The architecture test may read `src/` from disk, because checking the real tree is the purpose of that gate. The scanner logic is still tested with in-memory fixtures.
 
