@@ -1,6 +1,6 @@
 # Testing
 
-Run both commands from the repository root, on Zig 0.16.0:
+Run both commands from the repository root, on Zig 0.17.1:
 
 ```
 zig build test --summary all
