@@ -100,6 +100,8 @@ airdb_close(database);
   numbers
 - [docs/limits.md](docs/limits.md) — the honest list: threading contract,
   single-writer model, format caveats
+- [standards.md](standards.md): engineering standards
+- [Documentation/README.md](Documentation/README.md): engineering index
 
 ## Design principles
 
