@@ -238,8 +238,8 @@ pub const ImportScanner = struct {
     ) Verdict {
         const fromRing = ringOf(entries, from) orelse return .unranked;
         const toRing = ringOf(entries, to) orelse return .unranked;
-        const fromLevel = @intFromEnum(fromRing);
-        const toLevel = @intFromEnum(toRing);
+        const fromLevel = @backingInt(fromRing);
+        const toLevel = @backingInt(toRing);
         if (toLevel < fromLevel) return .allowed;
         if (toLevel == fromLevel) {
             // Infrastructure files stay apart so each OS concern can be replaced alone.

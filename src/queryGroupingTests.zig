@@ -1082,7 +1082,7 @@ const ColorSlot = struct {
 // threshold, or every row when null) into one slot per color, by hand: plain
 // arithmetic, no calls into query/aggregate.zig.
 fn foldFuzzRows(colors: []const u64, prices: []const u64, objectKeys: []const u64, threshold: ?u64) [fuzzColorRange]ColorSlot {
-    var slots = [_]ColorSlot{.{}} ** fuzzColorRange;
+    var slots: [fuzzColorRange]ColorSlot = @splat(.{});
     for (colors, prices, objectKeys) |color, price, objectKey| {
         if (threshold) |minimumPrice| {
             if (price < minimumPrice) continue;

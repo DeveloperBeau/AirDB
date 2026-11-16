@@ -28,7 +28,7 @@ Linux) and Windows.
 
 ## Building
 
-Requires Zig 0.16.
+Requires Zig 0.17.1.
 
 ```sh
 zig build test    # unit + integration tests + C ABI smoke test

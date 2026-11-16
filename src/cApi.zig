@@ -488,7 +488,7 @@ fn ffiTmpPathZ(pathAllocator: std.mem.Allocator, tmp: *testing.TmpDir, name: []c
     const dlen = try tmp.dir.realPath(testing.io, &pathBuffer);
     const joined = try std.fs.path.join(pathAllocator, &.{ pathBuffer[0..dlen], name });
     defer pathAllocator.free(joined);
-    return pathAllocator.dupeZ(u8, joined);
+    return pathAllocator.dupeSentinel(u8, joined, 0);
 }
 
 test "ffi: open, insert, get, count, update, delete, reopen" {

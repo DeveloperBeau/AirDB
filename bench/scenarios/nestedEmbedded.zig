@@ -95,8 +95,8 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
     defer combined.deinit(alloc);
 
     // Per-depth create/read p50s, in microseconds, indexed by depth-1.
-    var createP50Us = [_]f64{0} ** maxDepth;
-    var readP50Us = [_]f64{0} ** maxDepth;
+    var createP50Us: [maxDepth]f64 = @splat(0);
+    var readP50Us: [maxDepth]f64 = @splat(0);
 
     var totalNs: u64 = 0;
     var totalBuilt: u64 = 0;

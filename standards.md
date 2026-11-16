@@ -59,7 +59,7 @@ See `Documentation/Architecture/README.md` for the short ring write-up. See `doc
 
 ## Testing and checks
 
-From the repository root, on Zig 0.16.0:
+From the repository root, on Zig 0.17.1:
 
 ```
 zig build test --summary all
@@ -76,7 +76,7 @@ The rules:
 - Coverage is a floor. A test that cannot fail proves nothing.
 - Every feature, seam and complete data flow has a success case, a failure case and a fuzz case.
 - Fuzz tests check both directions. Bad input is refused and valid input is accepted.
-- Fuzz tests are seeded. A passing run must not print the seed, because the Zig 0.16 test runner treats non-empty stderr on a passing test step as a failed command. Print the seed only on failure.
+- Fuzz tests are seeded. A passing run must not print the seed, because the Zig 0.17.1 test runner treats non-empty stderr on a passing test step as a failed command. Print the seed only on failure.
 - When a pull request changes module code under test, mutation testing applies. Break that code on purpose, name the test expected to fail, confirm it fails, restore the code, and record the result in the pull request. The branch is current with `main` before the run. Any surviving mutant is killed by a new test or explained.
 - Values that cross a module boundary have an end-to-end test checked against a hand-written expected result. A test does not treat a value it produced from the code under test as the expected result.
 - Every wait is bounded. A hang fails with a name.

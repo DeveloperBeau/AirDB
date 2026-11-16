@@ -122,7 +122,7 @@ fn pickValue(random: std.Random) u64 {
 fn pickOperator(random: std.Random) Operator {
     // Indices 0..5 are eq, ne, lt, le, gt, ge; index 6 (beginsWith) is never
     // generated, since nothing in this corpus produces bytes values.
-    return @enumFromInt(random.intRangeLessThan(u8, 0, 6));
+    return @fromBackingInt(@intCast(random.intRangeLessThan(u8, 0, 6)));
 }
 
 fn makeComparison(random: std.Random) Predicate {
