@@ -279,7 +279,7 @@ pub fn processAlive(pid: u32) bool {
         // kill(pid, 0): success or EPERM means alive; ESRCH means dead.
         std.posix.kill(
             @as(std.posix.pid_t, @intCast(pid)),
-            @as(std.posix.SIG, @enumFromInt(0)),
+            @as(std.posix.SIG, @fromBackingInt(@intCast(0))),
         ) catch |err| switch (err) {
             error.ProcessNotFound => return false, // ESRCH: no such process
             error.PermissionDenied => return true, // EPERM: alive, not ours

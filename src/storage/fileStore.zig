@@ -205,7 +205,7 @@ pub const FileStore = struct {
     fn writeHeader(self: *FileStore) void {
         std.mem.writeInt(u64, self.map[offset.magic..][0..8], self.header.magic, .little);
         std.mem.writeInt(u32, self.map[offset.pageSize..][0..4], self.header.pageSize, .little);
-        self.map[offset.endianness] = @intFromEnum(self.header.endianness);
+        self.map[offset.endianness] = @backingInt(self.header.endianness);
         self.map[offset.activeSlot] = self.header.activeSlot;
         // [14..16] reserved -- zero explicitly so the CRC is deterministic
         @memset(self.map[14..16], 0);

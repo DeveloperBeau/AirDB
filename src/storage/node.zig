@@ -16,7 +16,7 @@ pub const NodeHeader = struct {
     pub fn encode(buffer: []u8, header: NodeHeader) EncodeResult {
         // Caller must provide >= size bytes. Under ReleaseSafe (this project's build mode) this assert is a safe trap, not UB.
         std.debug.assert(buffer.len >= size);
-        buffer[0] = @intFromEnum(header.kind);
+        buffer[0] = @backingInt(header.kind);
         std.mem.writeInt(u32, buffer[1..5], header.elementCount, .little);
         return .{ .headerLen = size };
     }
@@ -39,10 +39,10 @@ pub const NodeView = struct {
     pub fn parse(bytes: []const u8) error{Corrupt}!NodeView {
         if (bytes.len < NodeHeader.size) return error.Corrupt;
         const rawKind = bytes[0];
-        if (rawKind > @intFromEnum(NodeKind.rawBytes)) return error.Corrupt;
+        if (rawKind > @backingInt(NodeKind.rawBytes)) return error.Corrupt;
         return .{
             .header = .{
-                .kind = @enumFromInt(rawKind),
+                .kind = @fromBackingInt(@intCast(rawKind)),
                 .elementCount = std.mem.readInt(u32, bytes[1..5], .little),
             },
             .payload = bytes[NodeHeader.size..],

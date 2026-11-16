@@ -248,7 +248,7 @@ fn makeRandomTree(allocator: std.mem.Allocator, random: std.Random, depth: usize
     switch (kind) {
         0 => {
             const property = random.intRangeLessThan(usize, 0, intKinds.len + 1);
-            const operator: predicate.Operator = @enumFromInt(random.intRangeLessThan(u8, 0, 7));
+            const operator: predicate.Operator = @fromBackingInt(@intCast(random.intRangeLessThan(u8, 0, 7)));
             const valueIsBytes = random.boolean();
             const value: predicate.ComparisonValue = if (valueIsBytes) .{ .bytes = "probe" } else .{ .int = random.int(u64) };
             return .{ .comparison = .{ .property = property, .operator = operator, .value = value } };

@@ -334,7 +334,7 @@ test "minKey and maxKey track a model set under churn" {
     const lowSplitBoundary: u64 = edgeFillCount / 2; // keys below this are the known emptied-in-T1 leftmost leaf
     const highEdgeStart: u64 = domain - edgeFillCount;
     const highSplitBoundary: u64 = highEdgeStart + lowSplitBoundary; // keys from here up are the mirrored rightmost leaf
-    var present = [_]bool{false} ** domain;
+    var present: [domain]bool = @splat(false);
 
     // Ascending pre-fill at each edge, matching the boundary tests exactly so
     // the split point is known rather than inferred.

@@ -235,7 +235,7 @@ fn makeRandomTree(allocator: std.mem.Allocator, random: std.Random, depth: usize
     switch (kind) {
         0 => {
             const property = random.intRangeLessThan(usize, 0, 3);
-            const operator: Operator = @enumFromInt(random.intRangeLessThan(u8, 0, 7));
+            const operator: Operator = @fromBackingInt(@intCast(random.intRangeLessThan(u8, 0, 7)));
             // Half int, half bytes leaves, so both isIndexFriendly arms and
             // the mixed-child conjunction/disjunction paths get covered.
             if (random.boolean()) return intComparison(property, operator, random.int(u64));

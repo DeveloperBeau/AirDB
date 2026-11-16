@@ -918,7 +918,7 @@ fn checkCursorStabilityUnderCommits(allocator: std.mem.Allocator, path: []const 
     // (they may legitimately appear zero or one times, depending on whether
     // the scroll had already passed their sort position when they committed).
     try testing.expect(fetched.items.len > 0); // false-positive guard: nothing empty passes trivially
-    var seenCounts = [_]u8{0} ** 50;
+    var seenCounts: [50]u8 = @splat(0);
     for (fetched.items) |objectKey| seenCounts[objectKey] += 1;
     for (seenCounts[0..30]) |seenCount| try testing.expectEqual(@as(u8, 1), seenCount);
     for (seenCounts[30..50]) |seenCount| try testing.expect(seenCount <= 1);
@@ -985,7 +985,7 @@ test "P40: a row committed with a sort value before the cursor's resumed positio
 
     // Every pre-existing row must still be delivered exactly once; this rules
     // out a fix that hides the leak by dropping rows instead of excluding them.
-    var seenCounts = [_]u8{0} ** 30;
+    var seenCounts: [30]u8 = @splat(0);
     for (fetched.items) |objectKey| {
         if (objectKey < 30) seenCounts[objectKey] += 1;
     }

@@ -85,7 +85,7 @@ fn ringLabel(ring: ?Ring) []const u8 {
 }
 
 fn ringNumber(ring: ?Ring) u8 {
-    return if (ring) |known| @intFromEnum(known) else 0;
+    return if (ring) |known| @backingInt(known) else 0;
 }
 
 /// Records one resolved import as a file edge, or as a site the check must fail.
@@ -690,8 +690,8 @@ fn pairListed(allowed: []const RingTable.AllowedImport, from: []const u8, to: []
 
 /// True when the rule lets `from` import `to`, read straight from the Ring doc comment.
 fn pointsInward(from: RingTable.Entry, to: RingTable.Entry) bool {
-    const fromLevel = @intFromEnum(from.ring);
-    const toLevel = @intFromEnum(to.ring);
+    const fromLevel = @backingInt(from.ring);
+    const toLevel = @backingInt(to.ring);
     if (toLevel < fromLevel) return true;
     if (toLevel > fromLevel) return false;
     return from.ring != .infrastructure or std.mem.eql(u8, from.path, to.path);

@@ -136,9 +136,9 @@ pub fn writeCatalog(
         std.mem.writeInt(u64, allocation.bytes[propertyColumnsOffset + propertyIndex * 8 ..][0..8], reference, .little);
     }
     const kindsBase = kindsOffset(propertyCount);
-    for (kinds, 0..) |kind, propertyIndex| allocation.bytes[kindsBase + propertyIndex] = @intFromEnum(kind);
+    for (kinds, 0..) |kind, propertyIndex| allocation.bytes[kindsBase + propertyIndex] = @backingInt(kind);
     const elementsBase = elemsOffset(propertyCount);
-    for (elements, 0..) |element, propertyIndex| allocation.bytes[elementsBase + propertyIndex] = @intFromEnum(element);
+    for (elements, 0..) |element, propertyIndex| allocation.bytes[elementsBase + propertyIndex] = @backingInt(element);
     const blo = backlinksOffset(propertyCount);
     for (backlinks, 0..) |backlinkReference, propertyIndex| {
         std.mem.writeInt(u64, allocation.bytes[blo + propertyIndex * 8 ..][0..8], backlinkReference, .little);
@@ -146,7 +146,7 @@ pub fn writeCatalog(
     const targetsBase = targetsOffset(propertyCount);
     for (targets, 0..) |target, propertyIndex| std.mem.writeInt(u16, allocation.bytes[targetsBase + propertyIndex * 2 ..][0..2], target, .little);
     const rulesBase = rulesOffset(propertyCount);
-    for (rules, 0..) |rule, propertyIndex| allocation.bytes[rulesBase + propertyIndex] = @intFromEnum(rule);
+    for (rules, 0..) |rule, propertyIndex| allocation.bytes[rulesBase + propertyIndex] = @backingInt(rule);
     const valueIndexOffset = valueIndexRefsOffset(propertyCount);
     for (valueIndexReferences, 0..) |valueIndexReference, propertyIndex| {
         std.mem.writeInt(u64, allocation.bytes[valueIndexOffset + propertyIndex * 8 ..][0..8], valueIndexReference, .little);
@@ -275,13 +275,13 @@ pub const CatalogView = struct {
 
     /// The storage kind of property `propertyIndex` (validated at load time).
     pub fn kind(self: CatalogView, propertyIndex: usize) PropertyKind {
-        return @enumFromInt(self.bytes[kindsOffset(self.propertyCount) + propertyIndex]);
+        return @fromBackingInt(@intCast(self.bytes[kindsOffset(self.propertyCount) + propertyIndex]));
     }
 
     /// The element type of list/set property `propertyIndex`.
     pub fn elementKind(self: CatalogView, propertyIndex: usize) ElementKind {
         const elementsBase = propertyColumnsOffset + @as(usize, self.propertyCount) * 8 + self.propertyCount;
-        return @enumFromInt(self.bytes[elementsBase + propertyIndex]);
+        return @fromBackingInt(@intCast(self.bytes[elementsBase + propertyIndex]));
     }
 
     /// The reference of link property `propertyIndex`'s backlink index
@@ -300,7 +300,7 @@ pub const CatalogView = struct {
     /// The deletion rule of link property `propertyIndex`.
     pub fn deletionRule(self: CatalogView, propertyIndex: usize) DeletionRule {
         const rulesBase = propertyColumnsOffset + @as(usize, self.propertyCount) * 8 + @as(usize, self.propertyCount) * 2 + @as(usize, self.propertyCount) * 8 + @as(usize, self.propertyCount) * 2;
-        return @enumFromInt(self.bytes[rulesBase + propertyIndex]);
+        return @fromBackingInt(@intCast(self.bytes[rulesBase + propertyIndex]));
     }
 
     /// The reference of property `propertyIndex`'s value index
