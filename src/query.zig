@@ -443,4 +443,5 @@ test {
     _ = @import("queryGroupingTests.zig");
     _ = @import("queryIncludeTests.zig");
     _ = @import("queryIncludeCostTests.zig");
+    _ = @import("queryReadTransactionTests.zig");
 }
