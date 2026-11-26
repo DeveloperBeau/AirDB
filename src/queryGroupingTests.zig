@@ -510,6 +510,47 @@ test "D13: after relocation, distinct still returns the objectKey, both paths" {
     try testing.expectEqualSlices(u64, &.{targetObjectKey}, indexed.items);
 }
 
+test "D13a: distinct scan path reads the value at the resolved row, not at the objectKey" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try qgTmpPath(testing.allocator, &tmp, "d13a.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    var writeTransaction = try database.beginWrite();
+    defer writeTransaction.deinit();
+
+    // primaryKey + color. Rows after the throwaway: A (color 30), B (color 40)
+    // and C (color 40). B moves into the throwaway's slot, so B's objectKey
+    // names the slot it left. A read at the objectKey sees the poison there,
+    // which adds a third distinct value that no hand-written answer contains.
+    const definitions = [_]catalog.PropertyDefinition{ .{ .kind = .int }, .{ .kind = .int } };
+    var catalogReference = try catalog.createFromDefinitions(&writeTransaction, &definitions);
+    const throwaway = try rows.insert(&writeTransaction, catalogReference, &.{ 1, 99 });
+    catalogReference = throwaway.catalogReference;
+    const rowA = try rows.insert(&writeTransaction, catalogReference, &.{ 2, 30 });
+    catalogReference = rowA.catalogReference;
+    const rowB = try rows.insert(&writeTransaction, catalogReference, &.{ 3, 40 });
+    catalogReference = rowB.catalogReference;
+    const rowC = try rows.insert(&writeTransaction, catalogReference, &.{ 4, 40 });
+    catalogReference = rowC.catalogReference;
+
+    const deadRow = (try catalog.objectKeyToRow(&writeTransaction, catalogReference, throwaway.objectKey)).?;
+    var cells: [2]u64 = undefined;
+    const throwawayVersion = (try rows.getByPrimaryKey(&writeTransaction, catalogReference, 1, &cells)).?;
+    catalogReference = (try rows.delete(&writeTransaction, catalogReference, 1, throwawayVersion)).ok;
+    const relocated = try relocationFixture.relocateAndPoison(&writeTransaction, catalogReference, rowB.objectKey, deadRow);
+    catalogReference = relocated.catalogReference;
+    try testing.expectEqual(@as(?u64, rowB.objectKey), relocated.abandonedRow);
+    try testing.expect(deadRow != rowB.objectKey);
+
+    var out = std.ArrayList(u64).empty;
+    defer out.deinit(testing.allocator);
+    try query.distinct(&writeTransaction, catalogReference, 1, emptyPredicate, .{}, &out, testing.allocator);
+    // Color 30 is A alone. Color 40 is represented by B, the lower objectKey.
+    try testing.expectEqualSlices(u64, &.{ rowA.objectKey, rowB.objectKey }, out.items);
+}
+
 test "D14: out pre-loaded with a sentinel survives; distinct only appends" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
