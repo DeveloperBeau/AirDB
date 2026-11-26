@@ -137,6 +137,37 @@ test "opening a file with bad magic fails cleanly" {
     try testing.expectError(error.BadMagic, airdb.Database.open(testing.allocator, path));
 }
 
+test "neighbouring magic values are refused with error.BadMagic by Database.open" {
+    // Hand literals, not airdbMagic: the expected values must not move with the constant.
+    const current: u64 = 0x6169726462_0004;
+    const neighbours = [_]u64{ current - 1, current + 1 };
+    const io = std.Io.Threaded.global_single_threaded.io();
+    for (neighbours) |neighbour| {
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const path = try tmpFilePath(testing.allocator, &tmp, "neighbour.airdb");
+        defer testing.allocator.free(path);
+        {
+            var database = try airdb.Database.create(testing.allocator, path);
+            database.deinit();
+        }
+        {
+            const file = try std.Io.Dir.openFileAbsolute(io, path, .{ .mode = .read_write });
+            defer file.close(io);
+            var magicBytes: [8]u8 = undefined;
+            std.mem.writeInt(u64, &magicBytes, neighbour, .little);
+            try file.writePositionalAll(io, &magicBytes, 0);
+            try file.sync(io);
+        }
+        const before = try std.Io.Dir.cwd().readFileAlloc(io, path, testing.allocator, .unlimited);
+        defer testing.allocator.free(before);
+        try testing.expectError(error.BadMagic, airdb.Database.open(testing.allocator, path));
+        const after = try std.Io.Dir.cwd().readFileAlloc(io, path, testing.allocator, .unlimited);
+        defer testing.allocator.free(after);
+        try testing.expectEqualSlices(u8, before, after);
+    }
+}
+
 test "second commit supersedes the first on reopen" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
