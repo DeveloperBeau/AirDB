@@ -38,6 +38,10 @@ pub fn relocateRow(transaction: *WriteTransaction, catalogReference: Reference, 
 // Tests
 // ---------------------------------------------------------------------------
 
+test {
+    _ = @import("relocationFixtureTests.zig");
+}
+
 const Database = @import("../database.zig").Database;
 const testing = std.testing;
 const objects = @import("../records/objects.zig");
