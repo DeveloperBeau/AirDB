@@ -26,6 +26,10 @@ server, a WAL, or a dependency tree.
 Pre-1.0. The on-disk format is not yet stable between commits. POSIX (macOS,
 Linux) and Windows.
 
+CI runs the tests on macOS, Linux and Windows. It also build-checks the static
+library for iOS (device and simulator) and Android (aarch64 and x86_64). Those
+targets are built only, not tested.
+
 ## Building
 
 Requires Zig 0.17.1.
