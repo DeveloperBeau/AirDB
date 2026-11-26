@@ -1,9 +1,8 @@
 # On-disk format
 
-Pre-1.0: this layout changes without migration support. All integers are
-little-endian; the store refuses to open big-endian-tagged files. Current
-magic: `airdb_0004`; a file written with an older magic refuses to open with
-`error.BadMagic` rather than being read or migrated.
+Pre-1.0: the layout is not stable between commits. All integers are
+little-endian; the store refuses to open big-endian-tagged files. The magic is
+`airdb_0004`; a file without it fails to open with `error.BadMagic`.
 
 ## File layout
 
@@ -51,8 +50,8 @@ corrupt slot the same way whatever the reason.
 
 Why the kind is stored: nothing in a root node says which shape it has. A
 type directory, a bare catalog (the C ABI commits one) and raw bytes are all
-legal roots. Before `airdb_0004` the audit guessed, and a bare catalog read as a
-type directory passed with no audit at all. The kind is declared by the writer
+legal roots. Without a recorded kind the audit would have to guess, and a bare catalog read
+as a type directory would pass with no audit at all. The kind is declared by the writer
 through `WriteTransaction.setRoot(reference, kind)` and stored under the slot
 CRC. The version ring is unchanged. It feeds only point-in-time reads, and
 those readers already know what shape they expect.

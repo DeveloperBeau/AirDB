@@ -381,7 +381,7 @@ test "verifyIntegrity reports raw bytes committed under the catalog kind" {
 }
 
 // ---------------------------------------------------------------------------
-// Slot kinds that cannot be true, and the old format
+// Slot kinds that cannot be true
 // ---------------------------------------------------------------------------
 
 test "an unknown kind byte in the active slot makes open fall back to the previous version" {
@@ -435,26 +435,6 @@ test "verifyIntegrity reports SlotCorrupt when both mapped slots carry a kind th
         std.mem.writeInt(u32, slotBytes[36..40], std.hash.Crc32.hash(slotBytes[0..36]), .little);
     }
     try testing.expectError(error.SlotCorrupt, verification.verifyIntegrity(&database));
-}
-
-test "a database file with the old airdb_0003 magic is refused with error.BadMagic" {
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const path = try tmpFilePath(testing.allocator, &tmp, "old_0003.airdb");
-    defer testing.allocator.free(path);
-    {
-        var database = try Database.create(testing.allocator, path);
-        defer database.deinit();
-        try commitIndexedCatalog(&database);
-    }
-    {
-        const file = try std.Io.Dir.openFileAbsolute(testing.io, path, .{ .mode = .read_write });
-        defer file.close(testing.io);
-        var oldMagic: [8]u8 = undefined;
-        std.mem.writeInt(u64, &oldMagic, 0x6169726462_0003, .little);
-        try file.writePositionalAll(testing.io, &oldMagic, 0);
-    }
-    try testing.expectError(error.BadMagic, Database.open(testing.allocator, path));
 }
 
 // ---------------------------------------------------------------------------

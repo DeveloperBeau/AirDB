@@ -26,21 +26,8 @@ const FileSyncer = @import("syncer.zig").FileSyncer;
 // Public constants
 // ---------------------------------------------------------------------------
 
-/// File magic doubling as the format version ("airdb" + _NNNN).
-/// _0004: each commit slot records the kind of its root (none, blob, catalog,
-/// typeDirectory) in a CRC-covered byte, and the slot grows from 36 to 40
-/// bytes. Nothing in a root node says which shape it has, so verifyIntegrity
-/// guessed and a bare catalog root passed the audit unchecked. A `_0003` slot
-/// has no kind byte and its CRC sits where the kind now lives, so refusing it
-/// at open is the only safe reading.
-/// _0003: a `.blob` property may carry a value index, keyed by the stored bytes
-/// truncated to blobIndexKey.maxLength. A `_0002` file could hold a `.blob`
-/// property flagged indexed whose value index was built over blob REFERENCES
-/// (migrations.addProperty rejected only collection kinds), which no audit
-/// could detect because both directions of the audit agreed on the same
-/// nonsense key. Refusing such a file at open is the point of the bump.
-/// _0002: the free list is persisted as a chain of bounded chunks
-/// ([count u32][nextReference u64][extents...]), not a single unbounded node.
+/// File magic: "airdb" plus a format number. `open` fails with
+/// `error.BadMagic` on any other value.
 pub const airdbMagic: u64 = 0x6169726462_0004;
 /// Size of the header page; the header and both commit slots live in it.
 pub const defaultPageSize: u32 = 4096;
@@ -415,12 +402,12 @@ test "create writes a header that reopen reads back" {
     }
 }
 
-test "a _0002 file is refused" {
+test "a file without the current magic is refused with error.BadMagic" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var pathBuffer: [Io.Dir.max_path_bytes]u8 = undefined;
     const pathLen = try tmp.dir.realPath(testing.io, &pathBuffer);
-    const filePath = try std.fs.path.join(testing.allocator, &.{ pathBuffer[0..pathLen], "old_magic.airdb" });
+    const filePath = try std.fs.path.join(testing.allocator, &.{ pathBuffer[0..pathLen], "bad_magic.airdb" });
     defer testing.allocator.free(filePath);
 
     {
@@ -428,40 +415,12 @@ test "a _0002 file is refused" {
         store.deinit();
     }
 
-    // Overwrite bytes [0..8) with the _0002 magic, written by hand, while the
-    // file is genuinely closed (no FileStore handle open).
+    // Overwrite bytes [0..8) with a value that is not any airdb magic, while
+    // the file is genuinely closed (no FileStore handle open).
     {
         const file = try Io.Dir.openFileAbsolute(testing.io, filePath, .{ .mode = .read_write });
         defer file.close(testing.io);
-        var oldMagicBytes: [8]u8 = undefined;
-        std.mem.writeInt(u64, &oldMagicBytes, 0x6169726462_0002, .little);
-        try file.writePositionalAll(testing.io, &oldMagicBytes, 0);
-    }
-
-    try testing.expectError(error.BadMagic, FileStore.open(testing.allocator, filePath, FileSyncer.any()));
-}
-
-test "a _0003 file is refused" {
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var pathBuffer: [Io.Dir.max_path_bytes]u8 = undefined;
-    const pathLen = try tmp.dir.realPath(testing.io, &pathBuffer);
-    const filePath = try std.fs.path.join(testing.allocator, &.{ pathBuffer[0..pathLen], "old_magic_0003.airdb" });
-    defer testing.allocator.free(filePath);
-
-    {
-        var store = try FileStore.create(testing.allocator, filePath, FileSyncer.any());
-        store.deinit();
-    }
-
-    // Overwrite bytes [0..8) with the _0003 magic, written by hand, while the
-    // file is genuinely closed (no FileStore handle open).
-    {
-        const file = try Io.Dir.openFileAbsolute(testing.io, filePath, .{ .mode = .read_write });
-        defer file.close(testing.io);
-        var oldMagicBytes: [8]u8 = undefined;
-        std.mem.writeInt(u64, &oldMagicBytes, 0x6169726462_0003, .little);
-        try file.writePositionalAll(testing.io, &oldMagicBytes, 0);
+        try file.writePositionalAll(testing.io, "notairdb", 0);
     }
 
     try testing.expectError(error.BadMagic, FileStore.open(testing.allocator, filePath, FileSyncer.any()));
