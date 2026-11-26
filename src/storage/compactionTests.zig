@@ -94,7 +94,7 @@ test "compactType frees the replaced column set" {
             const version = (try rows.getByPrimaryKey(&writeTransaction, catalogReference, primaryKey, &out)).?;
             catalogReference = (try rows.delete(&writeTransaction, catalogReference, primaryKey, version)).ok;
         }
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
 
@@ -264,7 +264,7 @@ test "all value kinds deep-copy across databases preserving keys" {
         catalogReference = (try objects.deleteTyped(&writeTransaction, catalogReference, 3, version)).ok;
 
         srcNextKey = (try catalog.loadCatalog(&writeTransaction, catalogReference)).nextKey;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
 
@@ -275,7 +275,7 @@ test "all value kinds deep-copy across databases preserving keys" {
         var dstW = try destinationDatabase.beginWrite();
         var destinationCatalog = try copyTypeRows(&srcRead, sourceCatalog, &dstW);
         destinationCatalog = try rebuildBacklinks(&dstW, destinationCatalog);
-        dstW.setRoot(destinationCatalog);
+        dstW.setRoot(destinationCatalog, .catalog);
         _ = try dstW.commit();
         srcRead.end();
     }
@@ -371,7 +371,7 @@ test "compactToNewFile produces a verified, smaller, equivalent file" {
             const dres = try typeRouting.deleteNullifyCrossType(&writeTransaction, directoryReference, 1, index, version);
             directoryReference = dres.ok;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -463,7 +463,7 @@ test "compaction preserves dict and set-of-blob" {
         const dres = try typeRouting.deleteNullifyCrossType(&writeTransaction, directoryReference, 0, 2, version);
         directoryReference = dres.ok;
 
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -526,7 +526,7 @@ test "compaction preserves a large (chunked) blob" {
         var directoryReference = try typeDirectory.createTypes(&writeTransaction, &schema, &.{false});
         directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = 1 }, .{ .bytes = big } })).directoryReference;
         directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = 2 }, .{ .bytes = "small" } })).directoryReference;
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -900,7 +900,7 @@ test "compactInPlace preserves value indexes and passes verifyIntegrity" {
         while (primaryKey < 50) : (primaryKey += 1) {
             directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = primaryKey }, .{ .int = primaryKey % 5 } })).directoryReference;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
         database.deinit();
     }
@@ -962,7 +962,7 @@ test "compactInPlace shrinks and preserves data" {
             const dres = try typeRouting.deleteNullifyCrossType(&writeTransaction, directoryReference, 1, index, version);
             directoryReference = dres.ok;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
 
         preTop = database.arena.top;
@@ -1078,7 +1078,7 @@ test "compactInPlace preserves blob value indexes and passes verifyIntegrity" {
             const version = (try typeRouting.get(&writeTransaction, directoryReference, 0, primaryKey, &out)).?;
             directoryReference = (try typeRouting.delete(&writeTransaction, directoryReference, 0, primaryKey, version)).ok;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
         database.deinit();
     }
@@ -1158,7 +1158,7 @@ test "compactToNewFile preserves blob value indexes" {
             const version = (try typeRouting.get(&writeTransaction, directoryReference, 0, primaryKey, &out)).?;
             directoryReference = (try typeRouting.delete(&writeTransaction, directoryReference, 0, primaryKey, version)).ok;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 

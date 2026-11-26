@@ -123,7 +123,7 @@ fn createFresh(self: *DatabaseHandle, path: []const u8, propertyCount: u16) ?*Da
         writeTransaction.deinit();
         return abandonHandle(self);
     };
-    writeTransaction.setRoot(catalogReference);
+    writeTransaction.setRoot(catalogReference, .catalog);
     _ = writeTransaction.commit() catch return abandonHandle(self);
     self.propertyCount = propertyCount;
     return self;
@@ -152,7 +152,7 @@ export fn airdb_insert(handle: ?*DatabaseHandle, values: [*]const u64, length: u
         writeTransaction.deinit();
         return if (err == error.DuplicateKey) AIRDB_E_DUPLICATE else AIRDB_E_GENERIC;
     };
-    writeTransaction.setRoot(result.catalogReference);
+    writeTransaction.setRoot(result.catalogReference, .catalog);
     _ = writeTransaction.commit() catch return commitErrCode(self);
     return @intCast(result.objectKey);
 }
@@ -200,7 +200,7 @@ export fn airdb_update(handle: ?*DatabaseHandle, values: [*]const u64, length: u
     };
     switch (result) {
         .ok => |ok| {
-            writeTransaction.setRoot(ok.catalogReference);
+            writeTransaction.setRoot(ok.catalogReference, .catalog);
             _ = writeTransaction.commit() catch return commitErrCode(self);
             return AIRDB_OK;
         },
@@ -234,7 +234,7 @@ export fn airdb_delete(handle: ?*DatabaseHandle, primaryKey: u64) i64 {
     };
     switch (result) {
         .ok => |newCatalog| {
-            writeTransaction.setRoot(newCatalog);
+            writeTransaction.setRoot(newCatalog, .catalog);
             _ = writeTransaction.commit() catch return commitErrCode(self);
             return AIRDB_OK;
         },
@@ -282,7 +282,7 @@ export fn airdb_bulk_insert(handle: ?*DatabaseHandle, rowsFlat: [*]const u64, ro
             else => AIRDB_E_GENERIC,
         };
     };
-    writeTransaction.setRoot(newCatalog);
+    writeTransaction.setRoot(newCatalog, .catalog);
     // commit releases the lock on BOTH its success and its own error paths, so
     // do not unlock again here.
     _ = writeTransaction.commit() catch return commitErrCode(self);
@@ -322,7 +322,7 @@ export fn airdb_bulk_append(handle: ?*DatabaseHandle, rowsFlat: [*]const u64, ro
             else => AIRDB_E_GENERIC,
         };
     };
-    writeTransaction.setRoot(newCatalog);
+    writeTransaction.setRoot(newCatalog, .catalog);
     // commit releases the lock on BOTH its success and its own error paths, so
     // do not unlock again here.
     _ = writeTransaction.commit() catch return commitErrCode(self);
@@ -465,7 +465,7 @@ export fn airdb_commit(transaction: ?*Transaction) i64 {
         allocator.destroy(handle);
         return AIRDB_E_GENERIC;
     }
-    handle.writeTransaction.setRoot(handle.catalogReference);
+    handle.writeTransaction.setRoot(handle.catalogReference, .catalog);
     _ = handle.writeTransaction.commit() catch {
         // commit already released the lock per WriteTransaction.commit's contract; just
         // free the handle. Do NOT double-unlock.

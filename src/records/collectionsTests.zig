@@ -264,7 +264,7 @@ test "collections persist across commit and reopen" {
         })).catalogReference;
         catalogReference = try listAppendInt(&writeTransaction, catalogReference, 42, 1, 4);
         catalogReference = try setAddInt(&writeTransaction, catalogReference, 42, 2, 400);
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     {
@@ -411,7 +411,7 @@ test "dict and set-of-blob persist across reopen" {
         })).catalogReference;
         catalogReference = try dictPut(&writeTransaction, catalogReference, 42, 1, "three", 3);
         catalogReference = try setAddBlob(&writeTransaction, catalogReference, 42, 2, "gamma");
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     {

@@ -37,7 +37,7 @@ test "commit then reopen sees the committed root" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "HELLOAID");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     {
@@ -62,7 +62,7 @@ test "ending a read transaction twice does not release another reader's pin" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "PINDATA_");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     var readTransaction1 = try database.beginRead();
@@ -92,7 +92,7 @@ test "version horizon tracks the oldest live reader" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "NEWDATA_");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     try testing.expectEqual(version, database.horizon()); // r1 still pinned at v
@@ -112,7 +112,7 @@ test "free list persists across commit and reopen" {
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "FIRSTVAL");
         const allocationB = try writeTransaction.writableCopy(allocation.reference, 8); // frees the old node at this version
-        writeTransaction.setRoot(allocationB.reference);
+        writeTransaction.setRoot(allocationB.reference, .blob);
         _ = try writeTransaction.commit();
     }
     {
@@ -132,7 +132,7 @@ test "verifyIntegrity passes on a freshly committed database" {
     var writeTransaction = try database.beginWrite();
     const allocation = try writeTransaction.alloc(8);
     @memcpy(allocation.bytes, "INTEGER_");
-    writeTransaction.setRoot(allocation.reference);
+    writeTransaction.setRoot(allocation.reference, .blob);
     _ = try writeTransaction.commit();
     try verification.verifyIntegrity(&database); // void on clean database
 }
@@ -147,7 +147,7 @@ test "verifyIntegrity detects a root reference out of bounds" {
     var writeTransaction = try database.beginWrite();
     const allocation = try writeTransaction.alloc(8);
     @memcpy(allocation.bytes, "INTEGER_");
-    writeTransaction.setRoot(allocation.reference);
+    writeTransaction.setRoot(allocation.reference, .blob);
     _ = try writeTransaction.commit();
     database.activeRoot = database.store.map.len + 8; // point past the mapped region
     try testing.expectError(error.RootReferenceOutOfBounds, verification.verifyIntegrity(&database));
@@ -163,7 +163,7 @@ test "verifyIntegrity detects a corrupt header" {
     var writeTransaction = try database.beginWrite();
     const allocation = try writeTransaction.alloc(8);
     @memcpy(allocation.bytes, "INTEGER_");
-    writeTransaction.setRoot(allocation.reference);
+    writeTransaction.setRoot(allocation.reference, .blob);
     _ = try writeTransaction.commit();
     database.store.headerChecksumOk = false; // simulate an unreadable header
     try testing.expectError(error.HeaderCorrupt, verification.verifyIntegrity(&database));
@@ -179,7 +179,7 @@ test "verifyIntegrity detects a free-list node reference out of bounds" {
     var writeTransaction = try database.beginWrite();
     const allocation = try writeTransaction.alloc(8);
     @memcpy(allocation.bytes, "INTEGER_");
-    writeTransaction.setRoot(allocation.reference);
+    writeTransaction.setRoot(allocation.reference, .blob);
     _ = try writeTransaction.commit();
     database.freeListNodeReference = @intCast(database.store.map.len + 8); // past the mapped region (8-aligned)
     database.freeListNodeLen = 16;
@@ -196,7 +196,7 @@ test "verifyIntegrity detects a free extent out of bounds" {
     var writeTransaction = try database.beginWrite();
     const allocation = try writeTransaction.alloc(8);
     @memcpy(allocation.bytes, "INTEGER_");
-    writeTransaction.setRoot(allocation.reference);
+    writeTransaction.setRoot(allocation.reference, .blob);
     _ = try writeTransaction.commit();
     // Inject an extent whose offset is past the mapped region.
     try database.freeList.extents.append(database.store.allocator, .{ .offset = @intCast(database.store.map.len + 8), .len = 8, .freedVersion = 1 });
@@ -216,7 +216,7 @@ test "verifyIntegrity passes after churn on an indexed type" {
     {
         var writeTransaction = try database.beginWrite();
         const directoryReference = try typeDirectory.createTypes(&writeTransaction, &.{&.{ .{ .kind = .int }, .{ .kind = .int, .indexed = true } }}, &.{false});
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -228,7 +228,7 @@ test "verifyIntegrity passes after churn on an indexed type" {
         while (primaryKey < 200) : (primaryKey += 1) {
             directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, tid, &.{ .{ .int = primaryKey }, .{ .int = primaryKey % 16 } })).directoryReference;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -254,7 +254,7 @@ test "verifyIntegrity passes after churn on an indexed type" {
         while (primaryKey < 260) : (primaryKey += 1) {
             directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, tid, &.{ .{ .int = primaryKey }, .{ .int = primaryKey % 16 } })).directoryReference;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -278,7 +278,7 @@ test "verifyIntegrity detects a corrupted value index" {
         while (primaryKey < 8) : (primaryKey += 1) {
             directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, tid, &.{ .{ .int = primaryKey }, .{ .int = primaryKey } })).directoryReference;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     try verification.verifyIntegrity(&database); // clean before corruption
@@ -299,7 +299,7 @@ test "verifyIntegrity detects a corrupted value index" {
         const newVi = try Index.insert(&writeTransaction, view.valueIndexReference(propertyIndex), bogusValue, setRoot);
         const newCatalog = try catalog.setValueIndexReference(&writeTransaction, catalogReference, propertyIndex, newVi);
         const newDirectoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, tid, newCatalog);
-        writeTransaction.setRoot(newDirectoryReference);
+        writeTransaction.setRoot(newDirectoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -363,7 +363,7 @@ test "verifyIntegrity: clean after blob value-index churn (30 inserted, 10 updat
         const version = (try typeRouting.get(&writeTransaction, seeded.directoryReference, 0, primaryKey, &propertyBuffer)).?;
         seeded.directoryReference = (try typeRouting.delete(&writeTransaction, seeded.directoryReference, 0, primaryKey, version)).ok;
     }
-    writeTransaction.setRoot(seeded.directoryReference);
+    writeTransaction.setRoot(seeded.directoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
 
     // False negative: the 300-byte value and the shared-256-byte-prefix pair
@@ -385,7 +385,7 @@ test "verifyIntegrity detects a corrupted blob value index, backward direction (
         var writeTransaction = try database.beginWrite();
         const seeded = try seedBlobAuditDirectory(&writeTransaction);
         liveObjectKey = seeded.objectKeys[0];
-        writeTransaction.setRoot(seeded.directoryReference);
+        writeTransaction.setRoot(seeded.directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     try verification.verifyIntegrity(&database); // clean before corruption
@@ -400,7 +400,7 @@ test "verifyIntegrity detects a corrupted blob value index, backward direction (
         const newVi = try byteKeyIndex.insert(&writeTransaction, view.valueIndexReference(1), "no row carries this", setRoot);
         const newCatalog = try catalog.setValueIndexReference(&writeTransaction, catalogReference, 1, newVi);
         const newDirectoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, 0, newCatalog);
-        writeTransaction.setRoot(newDirectoryReference);
+        writeTransaction.setRoot(newDirectoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -426,7 +426,7 @@ test "verifyIntegrity rejects an outer key longer than blobIndexKey.maxLength in
         var writeTransaction = try database.beginWrite();
         const seeded = try seedBlobAuditDirectory(&writeTransaction);
         liveObjectKey = seeded.objectKeys[0];
-        writeTransaction.setRoot(seeded.directoryReference);
+        writeTransaction.setRoot(seeded.directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     try verification.verifyIntegrity(&database); // clean before corruption
@@ -443,7 +443,7 @@ test "verifyIntegrity rejects an outer key longer than blobIndexKey.maxLength in
         const newVi = try byteKeyIndex.insert(&writeTransaction, view.valueIndexReference(1), &overlongKey, setRoot);
         const newCatalog = try catalog.setValueIndexReference(&writeTransaction, catalogReference, 1, newVi);
         const newDirectoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, 0, newCatalog);
-        writeTransaction.setRoot(newDirectoryReference);
+        writeTransaction.setRoot(newDirectoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -461,7 +461,7 @@ test "verifyIntegrity detects a corrupted blob value index, forward direction (m
     {
         var writeTransaction = try database.beginWrite();
         const seeded = try seedBlobAuditDirectory(&writeTransaction);
-        writeTransaction.setRoot(seeded.directoryReference);
+        writeTransaction.setRoot(seeded.directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     try verification.verifyIntegrity(&database); // clean before corruption
@@ -475,7 +475,7 @@ test "verifyIntegrity detects a corrupted blob value index, forward direction (m
         const newVi = try byteKeyIndex.remove(&writeTransaction, view.valueIndexReference(1), "row-0");
         const newCatalog = try catalog.setValueIndexReference(&writeTransaction, catalogReference, 1, newVi);
         const newDirectoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, 0, newCatalog);
-        writeTransaction.setRoot(newDirectoryReference);
+        writeTransaction.setRoot(newDirectoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -502,7 +502,7 @@ test "verifyIntegrity detects a corrupted blob value index, backward value-misma
         var writeTransaction = try database.beginWrite();
         const seeded = try seedBlobAuditDirectory(&writeTransaction);
         rowZeroObjectKey = seeded.objectKeys[0];
-        writeTransaction.setRoot(seeded.directoryReference);
+        writeTransaction.setRoot(seeded.directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     try verification.verifyIntegrity(&database); // clean before corruption
@@ -523,7 +523,7 @@ test "verifyIntegrity detects a corrupted blob value index, backward value-misma
 
         const newCatalog = try catalog.setValueIndexReference(&writeTransaction, catalogReference, 1, newVi);
         const newDirectoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, 0, newCatalog);
-        writeTransaction.setRoot(newDirectoryReference);
+        writeTransaction.setRoot(newDirectoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -556,7 +556,7 @@ test "verifyIntegrity passes on a clean link graph after churn" {
         const sourceCatalog = try typeDirectory.catalogReference(&writeTransaction, directoryReference, 1);
         const newCatalog = try links.linkSetRemove(&writeTransaction, sourceCatalog, 1, 2, insertedA.objectKey);
         directoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, 1, newCatalog);
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     try verification.verifyIntegrity(&database); // forward + backward backlink audit finds no divergence
@@ -580,7 +580,7 @@ test "verifyIntegrity detects a corrupted backlink index" {
         directoryReference = insertedA.directoryReference;
         targetObjectKey = insertedA.objectKey;
         directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = 2 }, .{ .link = targetObjectKey } })).directoryReference;
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     try verification.verifyIntegrity(&database); // clean before corruption
@@ -595,7 +595,7 @@ test "verifyIntegrity detects a corrupted backlink index" {
         const newBl = try Index.remove(&writeTransaction, view.backlinkReference(1), targetObjectKey);
         const newCatalog = try catalog.setBacklinkReference(&writeTransaction, catalogReference, 1, newBl);
         const newDirectoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, 0, newCatalog);
-        writeTransaction.setRoot(newDirectoryReference);
+        writeTransaction.setRoot(newDirectoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     try testing.expectError(error.BacklinkMissingEntry, verification.verifyIntegrity(&database));
@@ -617,7 +617,7 @@ test "verifyIntegrity passes on a non-indexed type" {
         while (primaryKey < 50) : (primaryKey += 1) {
             directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, tid, &.{ .{ .int = primaryKey }, .{ .int = primaryKey * 3 } })).directoryReference;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -672,7 +672,7 @@ test "a second Database instance sees a commit made by the first after refresh-o
         var writeTransaction = try databaseA.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "SHARED!!");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     var readTransaction = try databaseB.beginRead();
@@ -693,7 +693,7 @@ test "a second writer is excluded while the first holds the write lock" {
     try testing.expectError(error.WouldBlock, databaseB.beginWriteTry());
     const allocation = try writeTransactionA.alloc(8);
     @memcpy(allocation.bytes, "FIRST!!!");
-    writeTransactionA.setRoot(allocation.reference);
+    writeTransactionA.setRoot(allocation.reference, .blob);
     _ = try writeTransactionA.commit();
     var writeTransactionB = try databaseB.beginWriteTry();
     writeTransactionB.deinit();
@@ -710,7 +710,7 @@ test "Database publishes its minimum pinned version to its participant slot" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "VERSION2");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     // No readers: this process publishes the sentinel (imposes no horizon constraint).
@@ -737,7 +737,7 @@ test "allocations beyond the initial mapping grow the file and data survives reo
             allocation.bytes[0] = @intCast(index & 0xff);
             lastReference = allocation.reference;
         }
-        writeTransaction.setRoot(lastReference);
+        writeTransaction.setRoot(lastReference, .blob);
         _ = try writeTransaction.commit();
         try testing.expect(database.store.map.len > 4096 * 256);
     }
@@ -764,7 +764,7 @@ test "observability: pinned version and storage size" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "FIRST!!!");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     // No open reader: the oldest pinned version is the active version.
@@ -776,7 +776,7 @@ test "observability: pinned version and storage size" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "SECOND!!");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     // The held reader pins the older version, below the new active version.
@@ -801,7 +801,7 @@ test "metrics report mapped length, versions, and reclaimable bytes" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "AAAAAAAA");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     const oldRoot = database.activeRoot;
@@ -810,7 +810,7 @@ test "metrics report mapped length, versions, and reclaimable bytes" {
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BBBBBBBB");
         try writeTransaction.free(oldRoot, 8);
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -841,7 +841,7 @@ test "version->root ring records committed versions" {
             var writeTransaction = try database.beginWrite();
             const allocation = try writeTransaction.alloc(8);
             @memcpy(allocation.bytes, "RINGDATA");
-            writeTransaction.setRoot(allocation.reference);
+            writeTransaction.setRoot(allocation.reference, .blob);
             _ = try writeTransaction.commit();
         }
 
@@ -884,7 +884,7 @@ test "ring wraps after capacity" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "WRAPDATA");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -920,7 +920,7 @@ test "a failed refresh leaves version and free list untouched" {
         var writeTransaction = try databaseA.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "VERSION2");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -937,7 +937,7 @@ test "a failed refresh leaves version and free list untouched" {
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "VERSION3");
         try writeTransaction.free(oldRoot, 8);
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     try testing.expect(databaseA.freeListNodeReference != 0);
@@ -972,7 +972,7 @@ test "a retried commit's ring entry wins over the aborted duplicate" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BASELINE");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     const vTarget = database.activeVersion + 1;
@@ -982,7 +982,7 @@ test "a retried commit's ring entry wins over the aborted duplicate" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "ABORTED!");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         try testing.expectError(error.Durability, writeTransaction.commit());
     }
 
@@ -991,7 +991,7 @@ test "a retried commit's ring entry wins over the aborted duplicate" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "REALDATA");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         try testing.expectEqual(vTarget, try writeTransaction.commit());
     }
 
@@ -1019,19 +1019,19 @@ test "beginReadAt opens a past version within the retention window" {
         var writeTransaction = try database.beginWrite();
         var catalogReference = try catalog.create(&writeTransaction, 2);
         catalogReference = (try rows.insert(&writeTransaction, catalogReference, &.{ 1, 100 })).catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         versionA = try writeTransaction.commit();
     }
     {
         var writeTransaction = try database.beginWrite();
         const catalogReference = (try rows.insert(&writeTransaction, writeTransaction.newRoot, &.{ 2, 200 })).catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         versionB = try writeTransaction.commit();
     }
     {
         var writeTransaction = try database.beginWrite();
         const catalogReference = (try rows.insert(&writeTransaction, writeTransaction.newRoot, &.{ 3, 300 })).catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         versionC = try writeTransaction.commit();
     }
 
@@ -1077,7 +1077,7 @@ test "the retention window is shared across instances and survives reopen" {
         var writeTransaction = try databaseA.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "RETAINED");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     {
@@ -1106,7 +1106,7 @@ test "a writer honors a retention floor raised by another instance" {
         var writeTransaction = try databaseB.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "AAAAAAAA");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     const oldRoot = databaseB.activeRoot;
@@ -1115,7 +1115,7 @@ test "a writer honors a retention floor raised by another instance" {
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BBBBBBBB");
         try writeTransaction.free(oldRoot, 8);
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     {
@@ -1141,13 +1141,13 @@ test "beginReadAt rejects a version aged out of the retention window" {
         var writeTransaction = try database.beginWrite();
         var catalogReference = try catalog.create(&writeTransaction, 2);
         catalogReference = (try rows.insert(&writeTransaction, catalogReference, &.{ 1, 100 })).catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         versionA = try writeTransaction.commit();
     }
     {
         var writeTransaction = try database.beginWrite();
         const catalogReference = (try rows.insert(&writeTransaction, writeTransaction.newRoot, &.{ 2, 200 })).catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     // vA is older than active - retainVersions(0) -> aged out.
@@ -1171,7 +1171,7 @@ fn churnNetZero(path: []const u8, live: u64, iters: u64, auto: bool) !struct { n
     {
         var writeTransaction = try database.beginWrite();
         const directoryReference = try typeDirectory.createTypes(&writeTransaction, &.{&.{ .{ .kind = .int }, .{ .kind = .int } }}, &.{false});
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -1183,7 +1183,7 @@ fn churnNetZero(path: []const u8, live: u64, iters: u64, auto: bool) !struct { n
         while (high < live) : (high += 1) {
             directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, tid, &.{ .{ .int = high }, .{ .int = high } })).directoryReference;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -1210,7 +1210,7 @@ fn churnNetZero(path: []const u8, live: u64, iters: u64, auto: bool) !struct { n
                 };
                 low += 1;
             }
-            writeTransaction.setRoot(directoryReference);
+            writeTransaction.setRoot(directoryReference, .typeDirectory);
             _ = try writeTransaction.commit();
         }
         // Opt-in: drive the incremental step loop so the type stays packed.
@@ -1252,7 +1252,7 @@ test "a failed commit-point flush poisons the instance until reopen" {
             errdefer writeTransaction.deinit();
             const allocation = try writeTransaction.alloc(8);
             @memcpy(allocation.bytes, "POISON!!");
-            writeTransaction.setRoot(allocation.reference);
+            writeTransaction.setRoot(allocation.reference, .blob);
             try testing.expectError(error.Durability, writeTransaction.commit());
         }
         try testing.expectError(error.CommitIndeterminate, database.beginWrite());
@@ -1264,7 +1264,7 @@ test "a failed commit-point flush poisons the instance until reopen" {
     var writeTransaction = try database.beginWrite();
     const allocation = try writeTransaction.alloc(8);
     @memcpy(allocation.bytes, "RESOLVED");
-    writeTransaction.setRoot(allocation.reference);
+    writeTransaction.setRoot(allocation.reference, .blob);
     _ = try writeTransaction.commit();
 }
 
@@ -1289,7 +1289,7 @@ test "a failed commit inside maybeCompactStep neither crashes nor wedges the wri
     {
         var writeTransaction = try database.beginWrite();
         const directoryReference = try typeDirectory.createTypes(&writeTransaction, &.{&.{ .{ .kind = .int }, .{ .kind = .int } }}, &.{false});
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     {
@@ -1306,7 +1306,7 @@ test "a failed commit inside maybeCompactStep neither crashes nor wedges the wri
                 else => unreachable,
             };
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -1341,7 +1341,7 @@ test "the compaction cursor never resumes across types" {
             &.{ .{ .kind = .int }, .{ .kind = .int } },
             &.{ .{ .kind = .int }, .{ .kind = .int } },
         }, &.{ false, false });
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     {
@@ -1360,7 +1360,7 @@ test "the compaction cursor never resumes across types" {
                     else => unreachable,
                 };
             }
-            writeTransaction.setRoot(directoryReference);
+            writeTransaction.setRoot(directoryReference, .typeDirectory);
         }
         _ = try writeTransaction.commit();
     }
@@ -1405,7 +1405,7 @@ test "a corrupt persisted free-list extent fails open instead of poisoning reuse
             var writeTransaction = try database.beginWrite();
             const allocation = try writeTransaction.alloc(8);
             @memcpy(allocation.bytes, "AAAAAAAA");
-            writeTransaction.setRoot(allocation.reference);
+            writeTransaction.setRoot(allocation.reference, .blob);
             _ = try writeTransaction.commit();
         }
         const oldRoot = database.activeRoot;
@@ -1414,7 +1414,7 @@ test "a corrupt persisted free-list extent fails open instead of poisoning reuse
             const allocation = try writeTransaction.alloc(8);
             @memcpy(allocation.bytes, "BBBBBBBB");
             try writeTransaction.free(oldRoot, 8);
-            writeTransaction.setRoot(allocation.reference);
+            writeTransaction.setRoot(allocation.reference, .blob);
             _ = try writeTransaction.commit();
         }
         nodeReference = database.freeListNodeReference;
@@ -1462,7 +1462,7 @@ test "maybeCompactStep is a no-op when nothing to compact" {
         while (primaryKey < 3) : (primaryKey += 1) {
             directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, tid, &.{ .{ .int = primaryKey }, .{ .int = primaryKey } })).directoryReference;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -1501,7 +1501,7 @@ test "a free list spanning multiple chunks survives commit and reopen" {
         for (references) |*reference| reference.* = (try writeTransaction.alloc(8)).reference;
         const root = try writeTransaction.alloc(8);
         @memcpy(root.bytes, "CHUNKED!");
-        writeTransaction.setRoot(root.reference);
+        writeTransaction.setRoot(root.reference, .blob);
         _ = try writeTransaction.commit();
     }
     {
@@ -1509,7 +1509,7 @@ test "a free list spanning multiple chunks survives commit and reopen" {
         for (references) |reference| try writeTransaction.free(reference, 8);
         const root = try writeTransaction.alloc(8);
         @memcpy(root.bytes, "CHUNKED2");
-        writeTransaction.setRoot(root.reference);
+        writeTransaction.setRoot(root.reference, .blob);
         _ = try writeTransaction.commit();
     }
     try testing.expect(database.freeListLengthForTest() >= nExtents);
@@ -1539,7 +1539,7 @@ test "a free-list chain whose next reference points up-chain is rejected as corr
             var writeTransaction = try database.beginWrite();
             const allocation = try writeTransaction.alloc(8);
             @memcpy(allocation.bytes, "CYCLBASE");
-            writeTransaction.setRoot(allocation.reference);
+            writeTransaction.setRoot(allocation.reference, .blob);
             _ = try writeTransaction.commit();
         }
         const oldRoot = database.activeRoot;
@@ -1548,7 +1548,7 @@ test "a free-list chain whose next reference points up-chain is rejected as corr
             const allocation = try writeTransaction.alloc(8);
             @memcpy(allocation.bytes, "CYCLNEXT");
             try writeTransaction.free(oldRoot, 8);
-            writeTransaction.setRoot(allocation.reference);
+            writeTransaction.setRoot(allocation.reference, .blob);
             _ = try writeTransaction.commit();
         }
         nodeReference = database.freeListNodeReference;

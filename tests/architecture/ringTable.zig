@@ -28,6 +28,7 @@ pub const RingTable = struct {
         // Entities: plain data and on-disk formats.
         .{ .path = "src/storage/reference.zig", .ring = .entities },
         .{ .path = "src/storage/slots.zig", .ring = .entities },
+        .{ .path = "src/storage/rootKind.zig", .ring = .entities },
         .{ .path = "src/storage/node.zig", .ring = .entities },
         .{ .path = "src/trees/indexNode.zig", .ring = .entities },
         .{ .path = "src/trees/columnNode.zig", .ring = .entities },

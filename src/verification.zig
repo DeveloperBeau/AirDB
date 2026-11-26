@@ -373,7 +373,7 @@ test "verifyIntegrity detects both slots corrupt" {
     var writeTransaction = try database.beginWrite();
     const allocation = try writeTransaction.alloc(8);
     @memcpy(allocation.bytes, "INTEGER_");
-    writeTransaction.setRoot(allocation.reference);
+    writeTransaction.setRoot(allocation.reference, .blob);
     _ = try writeTransaction.commit();
     // Corrupt the checksum bytes of BOTH slot regions so neither decodes. Header stays valid.
     database.store.map[slotAOff + 4] ^= 0xFF;

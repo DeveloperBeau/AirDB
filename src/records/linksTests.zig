@@ -126,7 +126,7 @@ test "nullifying a source's link bumps its version" {
         catalogReference = insertedA.catalogReference;
         objectKeyA = insertedA.objectKey;
         const insertedS = try insertTyped(&writeTransaction, catalogReference, &.{ .{ .int = 2 }, .{ .link = insertedA.objectKey } });
-        writeTransaction.setRoot(insertedS.catalogReference);
+        writeTransaction.setRoot(insertedS.catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     // Snapshot the source's version, then nullify it via the target's delete
@@ -147,7 +147,7 @@ test "nullifying a source's link bumps its version" {
             else => unreachable,
         };
         try testing.expectEqual(@as(?u64, null), try getLink(&writeTransaction, catalogReference, 2, 1));
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     // The pre-nullify version must now conflict instead of resurrecting the
@@ -320,7 +320,7 @@ test "links and backlinks persist across commit and reopen" {
         bossRow = boss.objectKey;
         var index: u64 = 2;
         while (index <= 50) : (index += 1) catalogReference = (try insertTyped(&writeTransaction, catalogReference, &.{ .{ .int = index }, .{ .link = boss.objectKey } })).catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     {
@@ -553,7 +553,7 @@ test "to-many links persist across commit and reopen" {
             const insertedO = try insertTyped(&writeTransaction, catalogReference, &.{ .{ .int = index }, .{ .linkSet = &.{hub.objectKey} } });
             catalogReference = insertedO.catalogReference;
         }
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     {
@@ -603,7 +603,7 @@ fn buildIndexedLinkFixture(database: *Database) !IndexedLinkFixture {
     var buffer: [2]catalog.Value = undefined;
     const targetVersion = (try typeRouting.get(&writeTransaction, directoryReference, 0, 1, &buffer)).?;
     directoryReference = (try typeRouting.deleteNullifyCrossType(&writeTransaction, directoryReference, 0, 1, targetVersion)).ok;
-    writeTransaction.setRoot(directoryReference);
+    writeTransaction.setRoot(directoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
 
     return .{ .target = target.objectKey, .source = source.objectKey, .bystander = bystander.objectKey };
@@ -710,7 +710,7 @@ test "L4: an untouched indexed link keeps its value-index entry through an unrel
     var buffer: [2]catalog.Value = undefined;
     const targetVersion = (try typeRouting.get(&writeTransaction, directoryReference, 0, 1, &buffer)).?;
     directoryReference = (try typeRouting.deleteNullifyCrossType(&writeTransaction, directoryReference, 0, 1, targetVersion)).ok;
-    writeTransaction.setRoot(directoryReference);
+    writeTransaction.setRoot(directoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
 
     var readTransaction = try database.beginRead();
@@ -769,7 +769,7 @@ test "L5: deleting a self-linked object with an indexed link leaves the index cl
     const deleteResult = try typeRouting.deleteNullifyCrossType(&writeTransaction, directoryReference, 0, 1, selfVersion);
     try testing.expect(deleteResult == .ok); // not .conflict: bumpVersion must stay false on the self-link path
     directoryReference = deleteResult.ok;
-    writeTransaction.setRoot(directoryReference);
+    writeTransaction.setRoot(directoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
 
     try verification.verifyIntegrity(&database);
@@ -822,7 +822,7 @@ test "L6: a link property with no value index is left alone by an inbound nullif
     var buffer: [2]catalog.Value = undefined;
     const targetVersion = (try typeRouting.get(&writeTransaction, directoryReference, 0, 1, &buffer)).?;
     directoryReference = (try typeRouting.deleteNullifyCrossType(&writeTransaction, directoryReference, 0, 1, targetVersion)).ok;
-    writeTransaction.setRoot(directoryReference);
+    writeTransaction.setRoot(directoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
 
     try verification.verifyIntegrity(&database);
@@ -859,7 +859,7 @@ test "L7: setLink moves the value-index entry with the link" {
     const source = try typeRouting.insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = 3 }, .{ .link = targetA.objectKey } });
     directoryReference = source.directoryReference;
     directoryReference = try typeRouting.setLink(&writeTransaction, directoryReference, 0, 3, 1, targetB.objectKey);
-    writeTransaction.setRoot(directoryReference);
+    writeTransaction.setRoot(directoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
 
     try verification.verifyIntegrity(&database);
@@ -945,7 +945,7 @@ test "L9: an inbound nullify of a to-many link stays auditable" {
     try testing.expect(deleteSelfResult == .ok);
     directoryReference = deleteSelfResult.ok;
 
-    writeTransaction.setRoot(directoryReference);
+    writeTransaction.setRoot(directoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
 
     try verification.verifyIntegrity(&database);
@@ -1061,7 +1061,7 @@ test "L10: fuzz, indexed link writes keep the value index and the columns in agr
             directoryReference = inserted.directoryReference;
             try model.put(primaryKey, .{ .objectKey = inserted.objectKey, .target = null });
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -1144,7 +1144,7 @@ test "L10: fuzz, indexed link writes keep the value index and the columns in agr
             },
         }
 
-        writeTransaction.setRoot(currentDirectory);
+        writeTransaction.setRoot(currentDirectory, .typeDirectory);
         _ = try writeTransaction.commit();
 
         try verification.verifyIntegrity(&database);
@@ -1259,7 +1259,7 @@ test "L12: an inbound nullify moves the value index at raw 1 and at a genuinely 
     directoryReference = (try typeRouting.deleteNullifyCrossType(&writeTransaction, directoryReference, 0, 1, targetZeroVersion)).ok;
     const targetNonZeroVersion = (try typeRouting.get(&writeTransaction, directoryReference, 0, 3, &buffer)).?;
     directoryReference = (try typeRouting.deleteNullifyCrossType(&writeTransaction, directoryReference, 0, 3, targetNonZeroVersion)).ok;
-    writeTransaction.setRoot(directoryReference);
+    writeTransaction.setRoot(directoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
 
     try verification.verifyIntegrity(&database);
@@ -1319,7 +1319,7 @@ test "L13: a link property with no value index is left alone by setLink" {
     const source = try typeRouting.insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = 3 }, .{ .link = targetA.objectKey } });
     directoryReference = source.directoryReference;
     directoryReference = try typeRouting.setLink(&writeTransaction, directoryReference, 0, 3, 1, targetB.objectKey);
-    writeTransaction.setRoot(directoryReference);
+    writeTransaction.setRoot(directoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
 
     try verification.verifyIntegrity(&database);
@@ -1365,7 +1365,7 @@ test "L14: a cross-type inbound nullify moves the value index too" {
     var buffer: [1]catalog.Value = undefined;
     const targetVersion = (try typeRouting.get(&writeTransaction, directoryReference, 0, 1, &buffer)).?;
     directoryReference = (try typeRouting.deleteNullifyCrossType(&writeTransaction, directoryReference, 0, 1, targetVersion)).ok;
-    writeTransaction.setRoot(directoryReference);
+    writeTransaction.setRoot(directoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
 
     var readTransaction = try database.beginRead();

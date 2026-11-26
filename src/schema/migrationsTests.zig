@@ -113,7 +113,7 @@ test "addProperty(indexed) backfills the value index for existing rows" {
         catalogReference = try addProperty(&writeTransaction, catalogReference, .{ .kind = .int, .indexed = true }, 7);
         // A post-migration insert supplies its own value.
         catalogReference = (try insert(&writeTransaction, catalogReference, &.{ 3, 30, 9 })).catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     try verification.verifyIntegrity(&database);
@@ -149,7 +149,7 @@ test "addProperty(linkSet) leaves pre-migration rows deletable" {
         const catalogReference = try typeDirectory.catalogReference(&writeTransaction, directoryReference, 0);
         const newCatalog = try addProperty(&writeTransaction, catalogReference, .{ .kind = .linkSet, .linkTarget = 0 }, 0);
         directoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, 0, newCatalog);
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     try verification.verifyIntegrity(&database); // the audit must not trip over the backfilled roots
@@ -159,7 +159,7 @@ test "addProperty(linkSet) leaves pre-migration rows deletable" {
         const version = (try typeRouting.get(&writeTransaction, writeTransaction.newRoot, 0, 1, &out)).?;
         const res = try typeRouting.deleteNullifyCrossType(&writeTransaction, writeTransaction.newRoot, 0, 1, version);
         try testing.expect(res == .ok); // previously error.BadReference
-        writeTransaction.setRoot(res.ok);
+        writeTransaction.setRoot(res.ok, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 }
@@ -215,7 +215,7 @@ test "addProperty copies a blob default per row instead of sharing one node" {
         catalogReference = (try insert(&writeTransaction, catalogReference, &.{ 2, 20 })).catalogReference;
         const dflt = try blob.put(&writeTransaction, "default-bytes");
         catalogReference = try addProperty(&writeTransaction, catalogReference, .{ .kind = .blob }, dflt);
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     var writeTransaction = try database.beginWrite();
@@ -284,7 +284,7 @@ test "addProperty(.blob, indexed) backfills one outer key carrying every live ro
         }
         const dflt = try blob.put(&writeTransaction, "default-bytes");
         catalogReference = try addProperty(&writeTransaction, catalogReference, .{ .kind = .blob, .indexed = true }, dflt);
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
 

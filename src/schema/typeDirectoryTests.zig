@@ -89,7 +89,7 @@ test "validate accepts a matching schema and rejects a mismatch" {
         defer database.deinit();
         var writeTransaction = try database.beginWrite();
         const directoryReference = try create(&writeTransaction, &schema);
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     {
@@ -163,7 +163,7 @@ test "multiple types persist across reopen and validate" {
             directoryReference = (try insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = index }, .{ .bytes = name } })).directoryReference;
             directoryReference = (try insert(&writeTransaction, directoryReference, 1, &.{ .{ .int = index }, .{ .int = index * 10 } })).directoryReference;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     {
@@ -335,7 +335,7 @@ test "cross-type links persist across reopen" {
         while (index <= 20) : (index += 1) {
             directoryReference = (try insert(&writeTransaction, directoryReference, 1, &.{ .{ .int = index }, .{ .link = authorObjectKey } })).directoryReference;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     {
@@ -606,7 +606,7 @@ test "a self-linked object is deletable across transactions" {
         const valueA = try insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = 1 }, .{ .link = null } });
         directoryReference = valueA.directoryReference;
         directoryReference = try setLink(&writeTransaction, directoryReference, 0, 1, 1, valueA.objectKey);
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     // Deleting it in a LATER transaction must succeed: the self-link neither
@@ -617,7 +617,7 @@ test "a self-linked object is deletable across transactions" {
         const version = (try get(&writeTransaction, writeTransaction.newRoot, 0, 1, &out)).?;
         const res = try deleteNullifyCrossType(&writeTransaction, writeTransaction.newRoot, 0, 1, version);
         try testing.expect(res == .ok);
-        writeTransaction.setRoot(res.ok);
+        writeTransaction.setRoot(res.ok, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     var readTransaction = try database.beginRead();
@@ -674,7 +674,7 @@ test "a directory delete of a self-referencing linkSet row frees its set root ex
         const ins = try insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = 1 }, .{ .linkSet = &.{} } });
         directoryReference = ins.directoryReference;
         directoryReference = try linkSetAdd(&writeTransaction, directoryReference, 0, 1, 1, ins.objectKey); // set contains own objectKey
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     var writeTransaction = try database.beginWrite();
@@ -712,7 +712,7 @@ test "a directory delete frees the row's collection storage" {
             &.{ .{ .kind = .int }, .{ .kind = .set, .element = .int }, .{ .kind = .list, .element = .int } },
         });
         directoryReference = (try insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = 1 }, .{ .setInt = &.{ 1, 2, 3 } }, .{ .listInt = &.{ 7, 8, 9 } } })).directoryReference;
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     var writeTransaction = try database.beginWrite();
@@ -756,7 +756,7 @@ test "a cascade delete frees the child's collection storage" {
         const child = try insert(&writeTransaction, directoryReference, 1, &.{ .{ .int = 100 }, .{ .setInt = &.{ 1, 2, 3 } } });
         directoryReference = child.directoryReference;
         directoryReference = (try insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = 1 }, .{ .link = child.objectKey } })).directoryReference;
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     var writeTransaction = try database.beginWrite();

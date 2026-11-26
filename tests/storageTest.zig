@@ -21,7 +21,7 @@ test "recovery survives a corrupted header by falling back to the best valid slo
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "GOODDATA");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     { // scramble activeSlot (offset 13) and the header crc (offset 28) on disk, leaving slots intact
@@ -52,7 +52,7 @@ test "data-barrier flush failure during commit leaves the prior version intact" 
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(4);
         @memcpy(allocation.bytes, "v1__");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     { // attempt v2; fail the FIRST flush of this session (the data barrier)
@@ -62,7 +62,7 @@ test "data-barrier flush failure during commit leaves the prior version intact" 
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(4);
         @memcpy(allocation.bytes, "v2!!");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         const preVersion = database.activeVersion;
         const preRoot = database.activeRoot;
         try testing.expectError(error.Durability, writeTransaction.commit());
@@ -88,7 +88,7 @@ test "header-flush failure during commit does not publish v2" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(4);
         @memcpy(allocation.bytes, "v1__");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     {
@@ -99,7 +99,7 @@ test "header-flush failure during commit does not publish v2" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(4);
         @memcpy(allocation.bytes, "v2!!");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         const preVersion = database.activeVersion;
         const preRoot = database.activeRoot;
         try testing.expectError(error.Durability, writeTransaction.commit());
@@ -150,13 +150,13 @@ test "second commit supersedes the first on reopen" {
         var writeTransaction1 = try database.beginWrite();
         const allocation = try writeTransaction1.alloc(4);
         @memcpy(allocation.bytes, "v1__");
-        writeTransaction1.setRoot(allocation.reference);
+        writeTransaction1.setRoot(allocation.reference, .blob);
         _ = try writeTransaction1.commit();
 
         var writeTransaction2 = try database.beginWrite();
         const allocationB = try writeTransaction2.alloc(4);
         @memcpy(allocationB.bytes, "v2!!");
-        writeTransaction2.setRoot(allocationB.reference);
+        writeTransaction2.setRoot(allocationB.reference, .blob);
         _ = try writeTransaction2.commit();
     }
     {
@@ -179,7 +179,7 @@ test "a reader pinned to an old version still reads its data after the writer re
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "AAAAAAAA");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -191,7 +191,7 @@ test "a reader pinned to an old version still reads its data after the writer re
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BBBBBBBB");
         try writeTransaction.free(reader.root(), 8);
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -215,7 +215,7 @@ test "freed space is reused only after the pinning reader releases" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "AAAAAAAA");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     var reader = try database.beginRead();
@@ -226,7 +226,7 @@ test "freed space is reused only after the pinning reader releases" {
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BBBBBBBB");
         try writeTransaction.free(oldRoot, 8);
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -260,7 +260,7 @@ test "after a data-barrier flush failure, the reopened database passes verifyInt
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BASELINE");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     {
@@ -270,7 +270,7 @@ test "after a data-barrier flush failure, the reopened database passes verifyInt
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "NEWERVAL");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         try testing.expectError(error.Durability, writeTransaction.commit());
     }
     {
@@ -294,7 +294,7 @@ test "after a header-flush failure, the reopened database passes verifyIntegrity
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BASELINE");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     {
@@ -304,7 +304,7 @@ test "after a header-flush failure, the reopened database passes verifyIntegrity
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "NEWERVAL");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         try testing.expectError(error.Durability, writeTransaction.commit());
     }
     {
@@ -328,7 +328,7 @@ test "a writer does not reuse space a reader in another instance still pins" {
         var writeTransaction = try databaseA.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "AAAAAAAA");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -344,7 +344,7 @@ test "a writer does not reuse space a reader in another instance still pins" {
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BBBBBBBB");
         try writeTransaction.free(pinnedRoot, 8);
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -384,7 +384,7 @@ test "an abandoned writer releases the lock and never publishes" {
         var writeTransaction = try databaseA.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BASELINE");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -392,7 +392,7 @@ test "an abandoned writer releases the lock and never publishes" {
         var writeTransaction = try databaseA.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "DROPPED!");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         writeTransaction.deinit();
     }
 
@@ -401,7 +401,7 @@ test "an abandoned writer releases the lock and never publishes" {
         var writeTransaction = try databaseB.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "SECONDWR");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -427,7 +427,7 @@ test "a database grown well past the initial size reopens and verifies" {
             @memset(allocation.bytes, @intCast(index & 0xff));
             root = allocation.reference;
         }
-        writeTransaction.setRoot(root);
+        writeTransaction.setRoot(root, .blob);
         _ = try writeTransaction.commit();
     }
     {

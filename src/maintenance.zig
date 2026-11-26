@@ -31,7 +31,7 @@ pub fn maybeCompactStep(database: *Database, typeId: u16, budget: usize) !Compac
     }
     const step = try compaction.compactStep(&writeTransaction, catalogReference, typeId, budget);
     const newDirectoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, typeId, step.catalogReference);
-    writeTransaction.setRoot(newDirectoryReference);
+    writeTransaction.setRoot(newDirectoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
     return .{ .ran = true, .moved = step.moved, .done = step.done };
 }

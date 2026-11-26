@@ -69,6 +69,8 @@ pub const freeListRecovery = @import("storage/freeListRecovery.zig");
 pub const fileStore = @import("storage/fileStore.zig");
 /// The checksummed commit-slot encoding.
 pub const slots = @import("storage/slots.zig");
+/// What a committed root points at, as recorded in its commit slot.
+pub const RootKind = @import("storage/rootKind.zig").RootKind;
 /// Generic storage-node header encode/parse.
 pub const node = @import("storage/node.zig");
 /// The injectable durability barrier and its implementations.

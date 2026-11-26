@@ -448,7 +448,7 @@ pub fn compactToNewFile(allocator: std.mem.Allocator, srcPath: []const u8, dstPa
     // VERIFY before publishing. On any mismatch, abort (no commit) -> dst discarded.
     try verifyEquivalent(allocator, &srcR, sourceDirectoryReference, &dstW, destinationDirectoryReference);
 
-    dstW.setRoot(destinationDirectoryReference);
+    dstW.setRoot(destinationDirectoryReference, .typeDirectory);
     _ = try dstW.commit();
     dstCommitted = true;
     destinationDatabase.deinit();
