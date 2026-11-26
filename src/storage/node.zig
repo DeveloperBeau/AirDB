@@ -78,3 +78,83 @@ test "parse rejects an out-of-range kind byte" {
     std.mem.writeInt(u32, buffer[1..5], 0, .little);
     try testing.expectError(error.Corrupt, NodeView.parse(&buffer));
 }
+
+test "node fuzz round-trips random headers and payloads for every kind" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("node round-trip fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    var buffer: [NodeHeader.size + 64]u8 = undefined;
+    var iteration: usize = 0;
+    while (iteration < 300) : (iteration += 1) {
+        const kind = random.enumValue(NodeKind);
+        const elementCount: u32 = switch (random.uintLessThan(u8, 4)) {
+            0 => 0,
+            1 => std.math.maxInt(u32),
+            else => random.int(u32),
+        };
+        const payloadLen = random.uintAtMost(usize, 64);
+        const written = NodeHeader.encode(&buffer, .{ .kind = kind, .elementCount = elementCount });
+        random.bytes(buffer[written.headerLen..][0..payloadLen]);
+        const encoded = buffer[0..written.totalLengthWithPayload(payloadLen)];
+
+        const view = try NodeView.parse(encoded);
+        try testing.expectEqual(kind, view.header.kind);
+        try testing.expectEqual(elementCount, view.header.elementCount);
+        try testing.expectEqualSlices(u8, encoded[NodeHeader.size..], view.payload);
+    }
+}
+
+test "node fuzz rejects short buffers and out-of-range kind bytes" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("node reject fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    var buffer: [NodeHeader.size + 64]u8 = undefined;
+    var iteration: usize = 0;
+    while (iteration < 300) : (iteration += 1) {
+        random.bytes(&buffer);
+        const shortLen = random.uintLessThan(usize, NodeHeader.size);
+        // Any kind byte, including a valid one: length alone must reject.
+        try testing.expectError(error.Corrupt, NodeView.parse(buffer[0..shortLen]));
+
+        const fullLen = NodeHeader.size + random.uintAtMost(usize, 64);
+        buffer[0] = random.intRangeAtMost(u8, 3, std.math.maxInt(u8));
+        try testing.expectError(error.Corrupt, NodeView.parse(buffer[0..fullLen]));
+    }
+}
+
+test "node fuzz mutated bytes parse to exactly the mutated values" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("node mutation fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    var buffer: [NodeHeader.size + 64]u8 = undefined;
+    var iteration: usize = 0;
+    while (iteration < 300) : (iteration += 1) {
+        const written = NodeHeader.encode(&buffer, .{ .kind = random.enumValue(NodeKind), .elementCount = random.int(u32) });
+        const payloadLen = random.uintAtMost(usize, 64);
+        random.bytes(buffer[written.headerLen..][0..payloadLen]);
+        const length = written.totalLengthWithPayload(payloadLen);
+
+        const flips = random.intRangeAtMost(usize, 1, 4);
+        var flip: usize = 0;
+        while (flip < flips) : (flip += 1) buffer[random.uintLessThan(usize, length)] = random.int(u8);
+        // Truncation keeps the header intact so only the payload shrinks.
+        const kept = NodeHeader.size + random.uintAtMost(usize, length - NodeHeader.size);
+        const mutated = buffer[0..kept];
+
+        if (mutated[0] > @backingInt(NodeKind.rawBytes)) {
+            try testing.expectError(error.Corrupt, NodeView.parse(mutated));
+            continue;
+        }
+        const view = try NodeView.parse(mutated);
+        try testing.expectEqual(mutated[0], @backingInt(view.header.kind));
+        try testing.expectEqual(std.mem.readInt(u32, mutated[1..5], .little), view.header.elementCount);
+        try testing.expectEqualSlices(u8, mutated[NodeHeader.size..], view.payload);
+        try testing.expectEqual(mutated.len - NodeHeader.size, view.payload.len);
+    }
+}

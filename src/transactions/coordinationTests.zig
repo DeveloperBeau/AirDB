@@ -214,3 +214,131 @@ test "globalHorizon keeps a live-pid slot whose stored token is zero" {
     try testing.expectEqual(myPid, coordinator.slotPidForTest(1)); // not reclaimed
     coordinator.releaseSlot(1);
 }
+
+fn fuzzCoordPath(tmp: *testing.TmpDir, name: []const u8) ![]u8 {
+    var pathBuffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dlen = try tmp.dir.realPath(coordIo(), &pathBuffer);
+    return std.fs.path.join(testing.allocator, &.{ pathBuffer[0..dlen], name });
+}
+
+fn slotTokenFromMap(coordinator: *Coordination, slotIndex: usize) u32 {
+    return std.mem.readInt(u32, coordinator.map[64 + slotIndex * 16 + 4 ..][0..4], .little);
+}
+
+test "sidecar fuzz reopen reads back the stored attach count, latest version and slots" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("sidecar round-trip fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cpath = try fuzzCoordPath(&tmp, "roundtrip.coord");
+    defer testing.allocator.free(cpath);
+
+    var iteration: usize = 0;
+    while (iteration < 200) : (iteration += 1) {
+        var pids: [64]u32 = undefined;
+        var tokens: [64]u32 = undefined;
+        var pins: [64]u64 = undefined;
+        const attachCount = random.int(u32);
+        const latest = random.int(u64);
+        {
+            var writer = try Coordination.openOrCreate(cpath);
+            defer writer.deinit();
+            @atomicStore(u32, @as(*u32, @ptrCast(@alignCast(&writer.map[8]))), attachCount, .seq_cst);
+            writer.setLatestVersion(latest);
+            for (0..64) |slotIndex| {
+                const filled = random.boolean();
+                // Arbitrary pids: only raw fields are checked, never globalHorizon.
+                pids[slotIndex] = if (filled) random.intRangeAtMost(u32, 1, std.math.maxInt(u32)) else 0;
+                tokens[slotIndex] = random.int(u32);
+                pins[slotIndex] = if (random.boolean()) sentinelMax else random.int(u64);
+                writer.forgeSlotForTest(slotIndex, pids[slotIndex], tokens[slotIndex], pins[slotIndex]);
+            }
+        }
+        var reader = try Coordination.openOrCreate(cpath);
+        defer reader.deinit();
+        try testing.expectEqual(coordination.coordMagic, std.mem.readInt(u64, reader.map[0..8], .little));
+        try testing.expectEqual(attachCount, reader.attachCount());
+        try testing.expectEqual(latest, reader.latestVersion());
+        for (0..64) |slotIndex| {
+            try testing.expectEqual(pids[slotIndex], reader.slotPidForTest(slotIndex));
+            try testing.expectEqual(tokens[slotIndex], slotTokenFromMap(&reader, slotIndex));
+            try testing.expectEqual(pins[slotIndex], reader.slotMinPinnedForTest(slotIndex));
+        }
+    }
+}
+
+test "sidecar fuzz reinitialises short and wrong-magic files" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("sidecar wrong-magic fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cpath = try fuzzCoordPath(&tmp, "short.coord");
+    defer testing.allocator.free(cpath);
+
+    var content: [4096]u8 = undefined;
+    var iteration: usize = 0;
+    while (iteration < 100) : (iteration += 1) {
+        const length = switch (random.uintLessThan(u8, 4)) {
+            0 => 0,
+            1 => 4095,
+            else => random.uintLessThan(usize, 4096),
+        };
+        random.bytes(content[0..length]);
+        if (length >= 8 and std.mem.readInt(u64, content[0..8], .little) == coordination.coordMagic) content[0] ^= 1;
+        {
+            const file = try std.Io.Dir.createFileAbsolute(coordIo(), cpath, .{ .read = true, .truncate = true });
+            defer file.close(coordIo());
+            try file.writePositionalAll(coordIo(), content[0..length], 0);
+        }
+        var coordinator = try Coordination.openOrCreate(cpath);
+        defer coordinator.deinit();
+        try testing.expect(try coordinator.file.length(coordIo()) >= 4096);
+        try testing.expectEqual(coordination.coordMagic, std.mem.readInt(u64, coordinator.map[0..8], .little));
+        try testing.expectEqual(@as(u32, 0), coordinator.attachCount());
+        try testing.expectEqual(@as(u64, 0), coordinator.latestVersion());
+        for (0..64) |slotIndex| {
+            try testing.expectEqual(@as(u32, 0), coordinator.slotPidForTest(slotIndex));
+            try testing.expectEqual(@as(u64, 0), coordinator.slotMinPinnedForTest(slotIndex));
+        }
+    }
+}
+
+test "sidecar fuzz keeps a stamped page with random garbage in every other byte" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("sidecar garbage fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cpath = try fuzzCoordPath(&tmp, "garbage.coord");
+    defer testing.allocator.free(cpath);
+
+    var content: [4096]u8 = undefined;
+    var iteration: usize = 0;
+    while (iteration < 100) : (iteration += 1) {
+        random.bytes(&content);
+        std.mem.writeInt(u64, content[0..8], coordination.coordMagic, .little);
+        {
+            const file = try std.Io.Dir.createFileAbsolute(coordIo(), cpath, .{ .read = true, .truncate = true });
+            defer file.close(coordIo());
+            try file.writePositionalAll(coordIo(), &content, 0);
+        }
+        var coordinator = try Coordination.openOrCreate(cpath);
+        defer coordinator.deinit();
+        try testing.expectEqualSlices(u8, &content, coordinator.map);
+        try testing.expectEqual(std.mem.readInt(u32, content[8..12], .little), coordinator.attachCount());
+        try testing.expectEqual(std.mem.readInt(u64, content[16..24], .little), coordinator.latestVersion());
+        for (0..64) |slotIndex| {
+            const base = 64 + slotIndex * 16;
+            try testing.expectEqual(std.mem.readInt(u32, content[base..][0..4], .little), coordinator.slotPidForTest(slotIndex));
+            try testing.expectEqual(std.mem.readInt(u64, content[base + 8 ..][0..8], .little), coordinator.slotMinPinnedForTest(slotIndex));
+        }
+    }
+}
