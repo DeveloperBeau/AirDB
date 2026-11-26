@@ -59,8 +59,8 @@ fn commitErrCode(self: *DatabaseHandle) i64 {
 
 /// Open the database at `path`, creating it with an int-property object type of
 /// `propertyCount` properties (property 0 is the primary key) if it does not exist.
-/// On an existing database the stored property count is used. Returns null on
-/// failure.
+/// On an existing database the stored property count is used. An existing file
+/// whose root is not a single catalog returns null. Returns null on failure.
 export fn airdb_open(pathPtr: [*:0]const u8, propertyCount: u16) ?*DatabaseHandle {
     const path = std.mem.span(pathPtr);
     // The storage layer requires an absolute path. Reject anything else here so
@@ -100,6 +100,8 @@ fn abandonHandle(self: *DatabaseHandle) ?*DatabaseHandle {
 // and returns null.
 fn adoptExisting(self: *DatabaseHandle, opened: Database) ?*DatabaseHandle {
     self.database = opened;
+    // The root must be a single catalog; a type directory or blob is not one.
+    if (self.database.activeRootKind != .catalog) return abandonHandle(self);
     var readTransaction = self.database.beginRead() catch return abandonHandle(self);
     const propertyCount = catalog.loadPropertyCount(&readTransaction, readTransaction.root()) catch {
         readTransaction.end();
@@ -594,6 +596,40 @@ test "ffi: open of a corrupt database returns null and never truncates the file"
     _ = try file.readPositionalAll(io, &magic, 0);
     // The corrupted magic is still there: nothing rewrote the header.
     try testing.expectEqualSlices(u8, &[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF }, &magic);
+}
+
+test "ffi: open of a type-directory or blob rooted file returns null and leaves the file unchanged" {
+    const typeDirectory = @import("schema/typeDirectory.zig");
+    const RootKind = @import("storage/rootKind.zig").RootKind;
+    inline for (.{ RootKind.typeDirectory, RootKind.blob }) |kind| {
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const path = try ffiTmpPathZ(testing.allocator, &tmp, "wrong_root.airdb");
+        defer testing.allocator.free(path);
+        {
+            var database = try Database.create(testing.allocator, path);
+            defer database.deinit();
+            var writeTransaction = try database.beginWrite();
+            const reference = switch (kind) {
+                .typeDirectory => try typeDirectory.createTypes(&writeTransaction, &.{&.{.{ .kind = .int }}}, &.{false}),
+                else => blk: {
+                    const allocation = try writeTransaction.alloc(8);
+                    @memcpy(allocation.bytes, "HELLOAID");
+                    break :blk allocation.reference;
+                },
+            };
+            writeTransaction.setRoot(reference, kind);
+            _ = try writeTransaction.commit();
+        }
+        const before = try tmp.dir.readFileAlloc(testing.io, "wrong_root.airdb", testing.allocator, .unlimited);
+        defer testing.allocator.free(before);
+
+        try testing.expect(airdb_open(path.ptr, 1) == null);
+
+        const after = try tmp.dir.readFileAlloc(testing.io, "wrong_root.airdb", testing.allocator, .unlimited);
+        defer testing.allocator.free(after);
+        try testing.expectEqualSlices(u8, before, after);
+    }
 }
 
 test "ffi transaction: begin then abort releases the write lock" {

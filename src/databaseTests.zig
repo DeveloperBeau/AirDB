@@ -1383,6 +1383,46 @@ test "a commit whose header flush fails never pairs the new root with the old ki
     }
 }
 
+// Commit a root of the given kind with no typed structure behind it.
+fn commitBareRoot(database: *Database, kind: @import("storage/rootKind.zig").RootKind) !void {
+    var writeTransaction = try database.beginWrite();
+    errdefer writeTransaction.deinit();
+    const reference = switch (kind) {
+        .catalog => try catalog.createFromDefinitions(&writeTransaction, &.{.{ .kind = .int }}),
+        else => blk: {
+            const allocation = try writeTransaction.alloc(8);
+            @memcpy(allocation.bytes, "HELLOAID");
+            break :blk allocation.reference;
+        },
+    };
+    writeTransaction.setRoot(reference, kind);
+    _ = try writeTransaction.commit();
+}
+
+test "maybeCompactStep refuses a catalog or blob root, keeps the root and frees the lock" {
+    const RootKind = @import("storage/rootKind.zig").RootKind;
+    inline for (.{ RootKind.catalog, RootKind.blob }) |kind| {
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const path = try tmpFilePath(testing.allocator, &tmp, "compact_wrong_kind.airdb");
+        defer testing.allocator.free(path);
+        var database = try Database.create(testing.allocator, path);
+        defer database.deinit();
+        try commitBareRoot(&database, kind);
+        const version = database.activeVersion;
+        const root = database.activeRoot;
+
+        try testing.expectError(error.RootKindMismatch, maintenance.maybeCompactStep(&database, 0, 4));
+        try testing.expectEqual(version, database.activeVersion);
+        try testing.expectEqual(root, database.activeRoot);
+        try testing.expectEqual(kind, database.activeRootKind);
+
+        var writeTransaction = try database.beginWriteTry(); // the lock was released
+        writeTransaction.deinit();
+        try verification.verifyIntegrity(&database);
+    }
+}
+
 test "a failed commit inside maybeCompactStep neither crashes nor wedges the write lock" {
     // Regression for the commit error contract: maybeCompactStep holds
     // `errdefer w.deinit()` across commit. Commit used to deinit the transaction's

@@ -1196,3 +1196,42 @@ test "compactToNewFile preserves blob value indexes" {
     std.mem.sort(u64, beginsHits.items, {}, std.sort.asc(u64));
     try testing.expectEqualSlices(u64, expectedBegins.items, beginsHits.items);
 }
+
+test "compactToNewFile refuses a catalog root before creating the destination" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const srcPath = try cmpTmpPath(testing.allocator, &tmp, "wrong_kind_src.airdb");
+    defer testing.allocator.free(srcPath);
+    const dstPath = try cmpTmpPath(testing.allocator, &tmp, "wrong_kind_dst.airdb");
+    defer testing.allocator.free(dstPath);
+    var version: u64 = undefined;
+    var root: u64 = undefined;
+    {
+        var database = try Database.create(testing.allocator, srcPath);
+        defer database.deinit();
+        var writeTransaction = try database.beginWrite();
+        const catalogReference = try catalog.createFromDefinitions(&writeTransaction, &.{.{ .kind = .int }});
+        writeTransaction.setRoot(catalogReference, .catalog);
+        _ = try writeTransaction.commit();
+        version = database.activeVersion;
+        root = database.activeRoot;
+    }
+    const before = try tmp.dir.readFileAlloc(testing.io, "wrong_kind_src.airdb", testing.allocator, .unlimited);
+    defer testing.allocator.free(before);
+
+    try testing.expectError(error.RootKindMismatch, compactToNewFile(testing.allocator, srcPath, dstPath));
+    try testing.expectError(error.RootKindMismatch, compactInPlace(testing.allocator, srcPath));
+    try testing.expectError(error.FileNotFound, tmp.dir.access(testing.io, "wrong_kind_dst.airdb", .{}));
+    try testing.expectError(error.FileNotFound, tmp.dir.access(testing.io, "wrong_kind_src.airdb.compacting", .{}));
+
+    {
+        var database = try Database.open(testing.allocator, srcPath);
+        defer database.deinit();
+        try testing.expectEqual(version, database.activeVersion);
+        try testing.expectEqual(root, database.activeRoot);
+        try testing.expectEqual(@import("rootKind.zig").RootKind.catalog, database.activeRootKind);
+    }
+    const after = try tmp.dir.readFileAlloc(testing.io, "wrong_kind_src.airdb", testing.allocator, .unlimited);
+    defer testing.allocator.free(after);
+    try testing.expectEqualSlices(u8, before, after);
+}

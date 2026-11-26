@@ -23,6 +23,8 @@ pub const CompactStepResult = struct { ran: bool, moved: usize, done: bool };
 pub fn maybeCompactStep(database: *Database, typeId: u16, budget: usize) !CompactStepResult {
     var writeTransaction = try database.beginWrite();
     errdefer writeTransaction.deinit();
+    // The root must be a type directory; any other kind is not a directory to read.
+    if (database.activeRootKind != .typeDirectory) return error.RootKindMismatch;
     const directoryReference = database.activeRoot;
     const catalogReference = try typeDirectory.catalogReference(&writeTransaction, directoryReference, typeId);
     if (!try compaction.shouldCompact(&writeTransaction, catalogReference)) {
