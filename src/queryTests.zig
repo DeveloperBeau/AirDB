@@ -237,7 +237,7 @@ test "query returns stable object keys after relocation" {
     catalogReference = (try rows.delete(&writeTransaction, catalogReference, 1, rowVersion1)).ok;
 
     // Relocate the target into the freed slot; its objectKey is unchanged.
-    catalogReference = try relocation.relocateRow(&writeTransaction, catalogReference, targetObjectKey, deadRow);
+    catalogReference = (try relocationFixture.relocateAndPoison(&writeTransaction, catalogReference, targetObjectKey, deadRow)).catalogReference;
 
     // A query that matches the relocated row must return its stable objectKey, and
     // that objectKey must resolve to the right values.
@@ -254,7 +254,7 @@ test "query returns stable object keys after relocation" {
     writeTransaction.deinit();
 }
 
-const relocation = @import("storage/relocation.zig");
+const relocationFixture = @import("storage/relocationFixtureTests.zig").RelocationFixtureTests;
 
 fn whereSorted(transaction: anytype, catalogReference: Reference, predicate: Predicate, out: *std.ArrayList(u64)) !void {
     try where(transaction, catalogReference, .{ .predicate = predicate }, out, testing.allocator);
