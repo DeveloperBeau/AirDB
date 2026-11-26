@@ -1268,6 +1268,121 @@ test "a failed commit-point flush poisons the instance until reopen" {
     _ = try writeTransaction.commit();
 }
 
+test "a commit whose data flush fails keeps the previous root kind in memory and on disk" {
+    const FailingSyncer = @import("storage/syncer.zig").FailingSyncer;
+    const RootKind = @import("storage/rootKind.zig").RootKind;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpFilePath(testing.allocator, &tmp, "kinddata.airdb");
+    defer testing.allocator.free(path);
+
+    // create = 2 flushes, the type directory commit = #3 and #4, so the
+    // failing commit's DATA barrier is #5.
+    var fsync = FailingSyncer{ .failOn = 5 };
+    var previousRoot: Reference = 0;
+    {
+        var database = try Database.createWith(testing.allocator, path, fsync.any());
+        defer database.deinit();
+        {
+            var writeTransaction = try database.beginWrite();
+            const directoryReference = try typeDirectory.createTypes(&writeTransaction, &.{&.{ .{ .kind = .int }, .{ .kind = .int } }}, &.{false});
+            writeTransaction.setRoot(directoryReference, .typeDirectory);
+            _ = try writeTransaction.commit();
+        }
+        previousRoot = database.activeRoot;
+        try testing.expect(previousRoot != 0);
+        try testing.expectEqual(RootKind.typeDirectory, database.activeRootKind);
+
+        {
+            var writeTransaction = try database.beginWrite();
+            errdefer writeTransaction.deinit();
+            const allocation = try writeTransaction.alloc(8);
+            @memcpy(allocation.bytes, "NEWBLOB!");
+            writeTransaction.setRoot(allocation.reference, .blob);
+            try testing.expectError(error.Durability, writeTransaction.commit());
+        }
+        try testing.expectEqual(RootKind.typeDirectory, database.activeRootKind);
+        try testing.expectEqual(previousRoot, database.activeRoot);
+
+        // A data-flush failure does not poison: a write that sets no root
+        // must carry the previous kind forward.
+        {
+            var writeTransaction = try database.beginWrite();
+            _ = try writeTransaction.commit();
+        }
+        try testing.expectEqual(RootKind.typeDirectory, database.activeRootKind);
+        try testing.expectEqual(previousRoot, database.activeRoot);
+        try verification.verifyIntegrity(&database);
+    }
+    var database = try Database.open(testing.allocator, path);
+    defer database.deinit();
+    try testing.expectEqual(RootKind.typeDirectory, database.activeRootKind);
+    try testing.expectEqual(previousRoot, database.activeRoot);
+    try verification.verifyIntegrity(&database);
+}
+
+test "a commit whose header flush fails never pairs the new root with the old kind" {
+    const FailingSyncer = @import("storage/syncer.zig").FailingSyncer;
+    const RootKind = @import("storage/rootKind.zig").RootKind;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpFilePath(testing.allocator, &tmp, "kindheader.airdb");
+    defer testing.allocator.free(path);
+
+    // create = 2 flushes, the type directory commit = #3 and #4, so the
+    // failing commit's data barrier is #5 and its HEADER flip is #6.
+    var fsync = FailingSyncer{ .failOn = 6 };
+    var previousRoot: Reference = 0;
+    var newRoot: Reference = 0;
+    {
+        var database = try Database.createWith(testing.allocator, path, fsync.any());
+        defer database.deinit();
+        {
+            var writeTransaction = try database.beginWrite();
+            const directoryReference = try typeDirectory.createTypes(&writeTransaction, &.{&.{ .{ .kind = .int }, .{ .kind = .int } }}, &.{false});
+            writeTransaction.setRoot(directoryReference, .typeDirectory);
+            _ = try writeTransaction.commit();
+        }
+        previousRoot = database.activeRoot;
+        try testing.expect(previousRoot != 0);
+        try testing.expectEqual(RootKind.typeDirectory, database.activeRootKind);
+
+        {
+            var writeTransaction = try database.beginWrite();
+            errdefer writeTransaction.deinit();
+            const allocation = try writeTransaction.alloc(8);
+            @memcpy(allocation.bytes, "NEWBLOB!");
+            newRoot = allocation.reference;
+            writeTransaction.setRoot(allocation.reference, .blob);
+            try testing.expectError(error.Durability, writeTransaction.commit());
+        }
+        try testing.expectEqual(RootKind.typeDirectory, database.activeRootKind);
+        try testing.expectEqual(previousRoot, database.activeRoot);
+        try testing.expectError(error.CommitIndeterminate, database.beginWrite());
+        try verification.verifyIntegrity(&database);
+    }
+    {
+        var database = try Database.open(testing.allocator, path);
+        defer database.deinit();
+        // The flipped pointer may or may not have persisted; either outcome
+        // is fine as long as root and kind belong together.
+        const keptPrevious = database.activeRoot == previousRoot and database.activeRootKind == RootKind.typeDirectory;
+        const tookNew = database.activeRoot == newRoot and database.activeRootKind == RootKind.blob;
+        try testing.expect(keptPrevious or tookNew);
+        try verification.verifyIntegrity(&database);
+
+        const reopenedRoot = database.activeRoot;
+        const reopenedKind = database.activeRootKind;
+        {
+            var writeTransaction = try database.beginWrite();
+            _ = try writeTransaction.commit();
+        }
+        try testing.expectEqual(reopenedRoot, database.activeRoot);
+        try testing.expectEqual(reopenedKind, database.activeRootKind);
+        try verification.verifyIntegrity(&database);
+    }
+}
+
 test "a failed commit inside maybeCompactStep neither crashes nor wedges the write lock" {
     // Regression for the commit error contract: maybeCompactStep holds
     // `errdefer w.deinit()` across commit. Commit used to deinit the transaction's
