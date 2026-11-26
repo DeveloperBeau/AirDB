@@ -844,8 +844,92 @@ fn fuzzPropertyCount(random: std.Random, iteration: usize) PropertyCount {
     return switch (iteration % 10) {
         0 => 0,
         1 => 64,
+        2 => if (iteration % 50 == 2) maxPropertyCount else random.uintAtMost(PropertyCount, 16),
         else => random.uintAtMost(PropertyCount, 16),
     };
+}
+
+fn fillRandomSnapshot(snapshot: *CatalogSnapshot, random: std.Random, propertyCount: PropertyCount) void {
+    snapshot.propertyCount = propertyCount;
+    snapshot.nextRow = random.int(u64);
+    snapshot.keyToRowIndexReference = random.int(u64);
+    snapshot.nextKey = random.int(u64);
+    snapshot.primaryKeyIndexReference = random.int(u64);
+    snapshot.versionColumnReference = random.int(u64);
+    snapshot.liveColumnReference = random.int(u64);
+    for (snapshot.properties[0..snapshot.propertyCount]) |*property| property.* = .{
+        .column = random.int(u64),
+        .kind = random.enumValue(PropertyKind),
+        .element = random.enumValue(ElementKind),
+        .backlink = random.int(u64),
+        .target = random.int(u16),
+        .rule = random.enumValue(DeletionRule),
+        .valueIndex = random.int(u64),
+        .indexed = random.boolean(),
+    };
+}
+
+fn expectSnapshotReadsBack(snapshot: *const CatalogSnapshot, view: anytype) !void {
+    try testing.expectEqual(snapshot.propertyCount, view.propertyCount);
+    try testing.expectEqual(snapshot.nextRow, view.nextRow);
+    try testing.expectEqual(snapshot.keyToRowIndexReference, view.keyToRowIndexReference);
+    try testing.expectEqual(snapshot.nextKey, view.nextKey);
+    try testing.expectEqual(snapshot.primaryKeyIndexReference, view.primaryKeyIndexReference);
+    try testing.expectEqual(snapshot.versionColumnReference, view.versionColumnReference);
+    try testing.expectEqual(snapshot.liveColumnReference, view.liveColumnReference);
+    for (snapshot.properties[0..snapshot.propertyCount], 0..) |property, propertyIndex| {
+        try testing.expectEqual(property.column, view.propertyColumnReference(propertyIndex));
+        try testing.expectEqual(property.kind, view.kind(propertyIndex));
+        try testing.expectEqual(property.element, view.elementKind(propertyIndex));
+        try testing.expectEqual(property.backlink, view.backlinkReference(propertyIndex));
+        try testing.expectEqual(property.target, view.linkTarget(propertyIndex));
+        try testing.expectEqual(property.rule, view.deletionRule(propertyIndex));
+        try testing.expectEqual(property.valueIndex, view.valueIndexReference(propertyIndex));
+        try testing.expectEqual(property.indexed, view.indexed(propertyIndex));
+    }
+}
+
+test "loadCatalog accepts exactly maxPropertyCount properties and reads back every field" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("catalog max property count seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try objTmpPath(testing.allocator, &tmp, "catmax.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    var writeTransaction = try database.beginWrite();
+    defer writeTransaction.deinit();
+
+    var snapshot: CatalogSnapshot = undefined;
+    var iteration: usize = 0;
+    while (iteration < 3) : (iteration += 1) {
+        fillRandomSnapshot(&snapshot, random, maxPropertyCount);
+        const reference = try snapshot.write(&writeTransaction);
+        const view = try loadCatalog(&writeTransaction, reference);
+        try testing.expectEqual(@as(usize, 256), @as(usize, view.propertyCount));
+        try expectSnapshotReadsBack(&snapshot, view);
+    }
+}
+
+test "loadCatalog rejects exactly maxPropertyCount plus one properties as corrupt" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try objTmpPath(testing.allocator, &tmp, "catover.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    var writeTransaction = try database.beginWrite();
+    defer writeTransaction.deinit();
+
+    const reference = try create(&writeTransaction, 3);
+    const base: usize = @intCast(reference);
+    _ = try loadCatalog(&writeTransaction, reference);
+    std.mem.writeInt(u16, database.store.map[base..][0..2], 257, .little);
+    try testing.expectError(error.Corrupt, loadCatalog(&writeTransaction, reference));
 }
 
 test "catalog fuzz loadCatalog reads back every generated field" {
@@ -866,42 +950,10 @@ test "catalog fuzz loadCatalog reads back every generated field" {
     var snapshot: CatalogSnapshot = undefined;
     var iteration: usize = 0;
     while (iteration < 150) : (iteration += 1) {
-        snapshot.propertyCount = fuzzPropertyCount(random, iteration);
-        snapshot.nextRow = random.int(u64);
-        snapshot.keyToRowIndexReference = random.int(u64);
-        snapshot.nextKey = random.int(u64);
-        snapshot.primaryKeyIndexReference = random.int(u64);
-        snapshot.versionColumnReference = random.int(u64);
-        snapshot.liveColumnReference = random.int(u64);
-        for (snapshot.properties[0..snapshot.propertyCount]) |*property| property.* = .{
-            .column = random.int(u64),
-            .kind = random.enumValue(PropertyKind),
-            .element = random.enumValue(ElementKind),
-            .backlink = random.int(u64),
-            .target = random.int(u16),
-            .rule = random.enumValue(DeletionRule),
-            .valueIndex = random.int(u64),
-            .indexed = random.boolean(),
-        };
+        fillRandomSnapshot(&snapshot, random, fuzzPropertyCount(random, iteration));
         const reference = try snapshot.write(&writeTransaction);
         const view = try loadCatalog(&writeTransaction, reference);
-        try testing.expectEqual(snapshot.propertyCount, view.propertyCount);
-        try testing.expectEqual(snapshot.nextRow, view.nextRow);
-        try testing.expectEqual(snapshot.keyToRowIndexReference, view.keyToRowIndexReference);
-        try testing.expectEqual(snapshot.nextKey, view.nextKey);
-        try testing.expectEqual(snapshot.primaryKeyIndexReference, view.primaryKeyIndexReference);
-        try testing.expectEqual(snapshot.versionColumnReference, view.versionColumnReference);
-        try testing.expectEqual(snapshot.liveColumnReference, view.liveColumnReference);
-        for (snapshot.properties[0..snapshot.propertyCount], 0..) |property, propertyIndex| {
-            try testing.expectEqual(property.column, view.propertyColumnReference(propertyIndex));
-            try testing.expectEqual(property.kind, view.kind(propertyIndex));
-            try testing.expectEqual(property.element, view.elementKind(propertyIndex));
-            try testing.expectEqual(property.backlink, view.backlinkReference(propertyIndex));
-            try testing.expectEqual(property.target, view.linkTarget(propertyIndex));
-            try testing.expectEqual(property.rule, view.deletionRule(propertyIndex));
-            try testing.expectEqual(property.valueIndex, view.valueIndexReference(propertyIndex));
-            try testing.expectEqual(property.indexed, view.indexed(propertyIndex));
-        }
+        try expectSnapshotReadsBack(&snapshot, view);
     }
 }
 
@@ -943,6 +995,8 @@ test "catalog fuzz rejects out-of-range enum bytes and oversized property counts
 
         const badCount = random.intRangeAtMost(u16, maxPropertyCount + 1, std.math.maxInt(u16));
         std.mem.writeInt(u16, map[base..][0..2], badCount, .little);
+        try testing.expectError(error.Corrupt, loadCatalog(&writeTransaction, reference));
+        std.mem.writeInt(u16, map[base..][0..2], maxPropertyCount + 1, .little);
         try testing.expectError(error.Corrupt, loadCatalog(&writeTransaction, reference));
     }
 }
