@@ -173,6 +173,67 @@ test "where over an index candidate set keeps a relocated row in both directions
     try testing.expectEqualSlices(u64, &.{ fixture.keyC, fixture.keyB }, descending.items);
 }
 
+test "where ordered by an indexed property applies the predicate at the resolved row, after relocation" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpPath(testing.allocator, &tmp, "reloc_where_indexed_predicate.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    var transaction = try database.beginWrite();
+    defer transaction.deinit();
+    const fixture = try seedRelocated(&transaction, true);
+
+    // The index yields B's key. Evaluating the predicate through the key instead
+    // of the resolved row would read the poisoned abandoned slot and drop B.
+    const equalsForty: query.Predicate = .{ .comparison = .{ .property = valueProperty, .operator = .eq, .value = .{ .int = 40 } } };
+    var out = std.ArrayList(u64).empty;
+    defer out.deinit(testing.allocator);
+    try query.where(&transaction, fixture.catalogReference, .{ .predicate = equalsForty, .ordering = .{ .sortKey = .{ .property = valueProperty } } }, &out, testing.allocator);
+    try testing.expectEqualSlices(u64, &.{ fixture.keyB, fixture.keyC }, out.items);
+}
+
+test "distinct over an indexed property applies the predicate at the resolved row, after relocation" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpPath(testing.allocator, &tmp, "reloc_distinct_predicate.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    var transaction = try database.beginWrite();
+    defer transaction.deinit();
+    const fixture = try seedRelocated(&transaction, true);
+
+    // The index yields B's key. Evaluating the predicate through the key instead
+    // of the resolved row would read the poisoned abandoned slot and drop B.
+    const equalsForty: query.Predicate = .{ .comparison = .{ .property = valueProperty, .operator = .eq, .value = .{ .int = 40 } } };
+    var out = std.ArrayList(u64).empty;
+    defer out.deinit(testing.allocator);
+    try query.distinct(&transaction, fixture.catalogReference, valueProperty, equalsForty, .{}, &out, testing.allocator);
+    try testing.expectEqualSlices(u64, &.{fixture.keyB}, out.items);
+}
+
+test "groupBy over an indexed group property applies the predicate at the resolved row, after relocation" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpPath(testing.allocator, &tmp, "reloc_group_predicate.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    var transaction = try database.beginWrite();
+    defer transaction.deinit();
+    const fixture = try seedRelocated(&transaction, true);
+
+    // The index yields B's key. Evaluating the predicate through the key instead
+    // of the resolved row would read the poisoned abandoned slot and drop B.
+    const equalsForty: query.Predicate = .{ .comparison = .{ .property = valueProperty, .operator = .eq, .value = .{ .int = 40 } } };
+    var out = std.ArrayList(query.Group).empty;
+    defer out.deinit(testing.allocator);
+    try query.groupBy(&transaction, fixture.catalogReference, .{ .groupProperty = valueProperty, .aggregateProperty = 0 }, equalsForty, &out, testing.allocator);
+    const expected = [_]query.Group{.{ .value = 40, .aggregate = .{ .count = 2, .sum = 7, .min = 3, .max = 4 } }};
+    try testing.expectEqualSlices(query.Group, &expected, out.items);
+}
+
 test "materializePage reads a relocated root's liveness, version and values at the resolved row" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
