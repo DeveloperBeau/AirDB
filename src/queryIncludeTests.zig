@@ -16,8 +16,8 @@ const Reference = @import("storage/reference.zig").Reference;
 const catalog = @import("schema/catalog.zig");
 const typeDirectory = @import("schema/typeDirectory.zig");
 const typeRouting = @import("schema/typeRouting.zig");
-const relocation = @import("storage/relocation.zig");
 const rows = @import("records/rows.zig");
+const relocationFixture = @import("storage/relocationFixtureTests.zig").RelocationFixtureTests;
 const links = @import("records/links.zig");
 const Column = @import("trees/column.zig");
 const include = @import("query/include.zig");
@@ -251,25 +251,16 @@ test "R11: objectKey is not row, a relocated target resolves through its physica
         else => unreachable,
     };
 
-    // Relocate author 2 into the freed slot.
+    // Relocate author 2 into the freed slot. The helper poisons the slot it
+    // leaves, so a row/objectKey transposition reads the poison instead of a
+    // coincidentally correct stale copy.
     authorCatalogReference = try typeDirectory.catalogReference(&writeTransaction, directoryReference, authorType);
-    const newAuthorCatalog = try relocation.relocateRow(&writeTransaction, authorCatalogReference, fixture.authorKeys[2], deadRow);
-    directoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, authorType, newAuthorCatalog);
+    const relocated = try relocationFixture.relocateAndPoison(&writeTransaction, authorCatalogReference, fixture.authorKeys[2], deadRow);
+    directoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, authorType, relocated.catalogReference);
 
     // The divergence must actually have happened, or this test is vacuous.
-    try testing.expect((try catalog.objectKeyToRow(&writeTransaction, newAuthorCatalog, fixture.authorKeys[2])).? != fixture.authorKeys[2]);
-
-    // Corrupt the abandoned slot: relocateRow only clears the live bit and
-    // leaves an identical readable copy there (storage/relocation.zig:30-31),
-    // so a row/objectKey transposition would still read the right answer by
-    // coincidence. This corruption is what makes the test load-bearing and
-    // never redundant: without it, a transposed read passes silently.
-    const abandonedRow = fixture.authorKeys[2];
-    var authorSnapshot = try catalog.CatalogSnapshot.load(&writeTransaction, newAuthorCatalog);
-    authorSnapshot.properties[2].column = try Column.set(&writeTransaction, authorSnapshot.properties[2].column, abandonedRow, 0xDEAD_BEEF);
-    authorSnapshot.versionColumnReference = try Column.set(&writeTransaction, authorSnapshot.versionColumnReference, abandonedRow, 0xDEAD_BEEF);
-    const corruptedAuthorCatalog = try authorSnapshot.replace(&writeTransaction);
-    directoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, authorType, corruptedAuthorCatalog);
+    try testing.expectEqual(@as(?u64, fixture.authorKeys[2]), relocated.abandonedRow);
+    try testing.expect((try catalog.objectKeyToRow(&writeTransaction, relocated.catalogReference, fixture.authorKeys[2])).? != fixture.authorKeys[2]);
 
     var resultArena = std.heap.ArenaAllocator.init(testing.allocator);
     defer resultArena.deinit();
@@ -288,8 +279,8 @@ test "R11: objectKey is not row, a relocated target resolves through its physica
     const authorObject = expectObject(roots[0].included[0].target);
     try testing.expectEqual(fixture.authorKeys[2], authorObject.objectKey);
     try testing.expectEqual(PropertyValue{ .int = authorBirthYears[2] }, authorObject.values[2]);
-    // A transposed read would return the abandoned slot's corrupted version,
-    // 0xDEAD_BEEF, in place of author 2's real one.
+    // A transposed read would return the abandoned slot's poisoned version
+    // in place of author 2's real one.
     try testing.expectEqual(authorTwoVersionBeforeRelocation, authorObject.version);
 }
 

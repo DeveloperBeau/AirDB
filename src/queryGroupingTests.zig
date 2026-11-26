@@ -18,9 +18,8 @@ const query = @import("query.zig");
 const catalog = @import("schema/catalog.zig");
 const rows = @import("records/rows.zig");
 const index = @import("trees/index.zig");
-const relocation = @import("storage/relocation.zig");
+const relocationFixture = @import("storage/relocationFixtureTests.zig").RelocationFixtureTests;
 const Reference = @import("storage/reference.zig").Reference;
-const Column = @import("trees/column.zig");
 const Database = @import("database.zig").Database;
 const WriteTransaction = @import("database.zig").WriteTransaction;
 
@@ -494,7 +493,7 @@ test "D13: after relocation, distinct still returns the objectKey, both paths" {
     var versionBuffer: [3]u64 = undefined;
     const rowVersion = (try rows.getByPrimaryKey(&writeTransaction, catalogReference, 1, &versionBuffer)).?;
     catalogReference = (try rows.delete(&writeTransaction, catalogReference, 1, rowVersion)).ok;
-    catalogReference = try relocation.relocateRow(&writeTransaction, catalogReference, targetObjectKey, deadRow);
+    catalogReference = (try relocationFixture.relocateAndPoison(&writeTransaction, catalogReference, targetObjectKey, deadRow)).catalogReference;
 
     // The divergence this test exists to prove: objectKey no longer equals row.
     const resolvedRow = (try catalog.objectKeyToRow(&writeTransaction, catalogReference, targetObjectKey)).?;
@@ -509,6 +508,47 @@ test "D13: after relocation, distinct still returns the objectKey, both paths" {
     defer indexed.deinit(testing.allocator);
     try query.distinct(&writeTransaction, catalogReference, 2, emptyPredicate, .{}, &indexed, testing.allocator);
     try testing.expectEqualSlices(u64, &.{targetObjectKey}, indexed.items);
+}
+
+test "D13a: distinct scan path reads the value at the resolved row, not at the objectKey" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try qgTmpPath(testing.allocator, &tmp, "d13a.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    var writeTransaction = try database.beginWrite();
+    defer writeTransaction.deinit();
+
+    // primaryKey + color. Rows after the throwaway: A (color 30), B (color 40)
+    // and C (color 40). B moves into the throwaway's slot, so B's objectKey
+    // names the slot it left. A read at the objectKey sees the poison there,
+    // which adds a third distinct value that no hand-written answer contains.
+    const definitions = [_]catalog.PropertyDefinition{ .{ .kind = .int }, .{ .kind = .int } };
+    var catalogReference = try catalog.createFromDefinitions(&writeTransaction, &definitions);
+    const throwaway = try rows.insert(&writeTransaction, catalogReference, &.{ 1, 99 });
+    catalogReference = throwaway.catalogReference;
+    const rowA = try rows.insert(&writeTransaction, catalogReference, &.{ 2, 30 });
+    catalogReference = rowA.catalogReference;
+    const rowB = try rows.insert(&writeTransaction, catalogReference, &.{ 3, 40 });
+    catalogReference = rowB.catalogReference;
+    const rowC = try rows.insert(&writeTransaction, catalogReference, &.{ 4, 40 });
+    catalogReference = rowC.catalogReference;
+
+    const deadRow = (try catalog.objectKeyToRow(&writeTransaction, catalogReference, throwaway.objectKey)).?;
+    var cells: [2]u64 = undefined;
+    const throwawayVersion = (try rows.getByPrimaryKey(&writeTransaction, catalogReference, 1, &cells)).?;
+    catalogReference = (try rows.delete(&writeTransaction, catalogReference, 1, throwawayVersion)).ok;
+    const relocated = try relocationFixture.relocateAndPoison(&writeTransaction, catalogReference, rowB.objectKey, deadRow);
+    catalogReference = relocated.catalogReference;
+    try testing.expectEqual(@as(?u64, rowB.objectKey), relocated.abandonedRow);
+    try testing.expect(deadRow != rowB.objectKey);
+
+    var out = std.ArrayList(u64).empty;
+    defer out.deinit(testing.allocator);
+    try query.distinct(&writeTransaction, catalogReference, 1, emptyPredicate, .{}, &out, testing.allocator);
+    // Color 30 is A alone. Color 40 is represented by B, the lower objectKey.
+    try testing.expectEqualSlices(u64, &.{ rowA.objectKey, rowB.objectKey }, out.items);
 }
 
 test "D14: out pre-loaded with a sentinel survives; distinct only appends" {
@@ -952,24 +992,17 @@ test "G14: after relocation, the aggregate is read from the row the objectKey no
     var versionBuffer: [4]u64 = undefined;
     const throwawayVersion = (try rows.getByPrimaryKey(&writeTransaction, catalogReference, 100, &versionBuffer)).?;
     catalogReference = (try rows.delete(&writeTransaction, catalogReference, 100, throwawayVersion)).ok;
-    catalogReference = try relocation.relocateRow(&writeTransaction, catalogReference, rowB.objectKey, deadRow);
+    catalogReference = (try relocationFixture.relocateAndPoison(&writeTransaction, catalogReference, rowB.objectKey, deadRow)).catalogReference;
 
     // The divergence this test exists to prove: rowB's objectKey no longer
     // equals the physical row it resolves to.
     const resolvedRow = (try catalog.objectKeyToRow(&writeTransaction, catalogReference, rowB.objectKey)).?;
     try testing.expect(resolvedRow != rowB.objectKey);
 
-    // relocateRow copies rowB's cells into resolvedRow but never clears its
-    // old physical slot, so that slot (which happens to sit at row index
-    // rowB.objectKey, since inserts advance row and objectKey in lockstep)
-    // still holds an untouched copy of rowB's original price. Overwrite it
-    // with a value that could never belong to this group, so a sink that
-    // reads at objectKey instead of the resolved row is caught rather than
-    // coincidentally reading a stale-but-still-correct copy.
-    const priceColumn = (try catalog.loadCatalog(&writeTransaction, catalogReference)).propertyColumnReference(3);
-    const corruptedPriceColumn = try Column.set(&writeTransaction, priceColumn, rowB.objectKey, 555555);
-    catalogReference = try catalog.setPropertyColumnReference(&writeTransaction, catalogReference, 3, corruptedPriceColumn);
-
+    // The helper poisoned every cell of the abandoned slot, which sits at row
+    // index rowB.objectKey because inserts advance row and objectKey in
+    // lockstep. A sink that reads the group or the price at objectKey instead
+    // of the resolved row sees the poison, never a stale copy.
     const expected = [_]Group{.{ .value = 7, .aggregate = .{ .count = 2, .sum = 30, .min = 10, .max = 20 } }};
 
     var unindexed = std.ArrayList(Group).empty;

@@ -38,6 +38,10 @@ pub fn relocateRow(transaction: *WriteTransaction, catalogReference: Reference, 
 // Tests
 // ---------------------------------------------------------------------------
 
+test {
+    _ = @import("relocationFixtureTests.zig");
+}
+
 const Database = @import("../database.zig").Database;
 const testing = std.testing;
 const objects = @import("../records/objects.zig");
@@ -102,6 +106,7 @@ test "setLink after relocating the SOURCE keeps the backlink graph exact" {
     // as stable objectKeys. Once a source row was relocated the two diverged:
     // removals missed, stale entries inflated counts, and nullify could clear
     // an unrelated object's link. Backlink sources must be objectKeys.
+    const relocationFixture = @import("relocationFixtureTests.zig").RelocationFixtureTests;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try objTmpPath(testing.allocator, &tmp, "reloc3.airdb");
@@ -129,7 +134,7 @@ test "setLink after relocating the SOURCE keeps the backlink graph exact" {
     var out: [2]u64 = undefined;
     const dv = (try rows.getByPrimaryKey(&writeTransaction, catalogReference, 99, &out)).?;
     catalogReference = (try rows.delete(&writeTransaction, catalogReference, 99, dv)).ok;
-    catalogReference = try relocateRow(&writeTransaction, catalogReference, src.objectKey, deadRow);
+    catalogReference = (try relocationFixture.relocateAndPoison(&writeTransaction, catalogReference, src.objectKey, deadRow)).catalogReference;
     try testing.expect((try catalog.objectKeyToRow(&writeTransaction, catalogReference, src.objectKey)).? != src.objectKey);
 
     // Link src -> t1, then move it to t2: counts must track exactly.
