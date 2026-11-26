@@ -15,4 +15,6 @@ The bench target is optional for a pull request. Run it when the change alters b
 
 Tests write only under a temporary directory.
 
+A test that needs a row whose physical slot differs from its object key relocates it with `RelocationFixtureTests.relocateAndPoison` in `src/storage/relocationFixtureTests.zig`. `relocateRow` leaves a readable copy in the slot it abandons, so a read through the wrong index would pass by coincidence. The helper overwrites every property cell and the version cell of that slot with a poison value. Expected values in such a test are written by hand.
+
 See [standards.md](../standards.md) for the full testing rules.

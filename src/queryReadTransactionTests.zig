@@ -259,9 +259,9 @@ test "cursorAfter compiles and runs against a ReadTransaction" {
     const catalogReference = try itemCatalog(&readTransaction);
 
     // Item key 2 has score 20.
-    const cursor = try query.cursorAfter(&readTransaction, catalogReference, .{ .sortKey = .{ .property = scoreProperty } }, 2);
-    try testing.expectEqual(@as(u64, 20), cursor.lastValue);
-    try testing.expectEqual(@as(u64, 2), cursor.lastObjectKey);
+    const resumePoint = try query.cursorAfter(&readTransaction, catalogReference, .{ .sortKey = .{ .property = scoreProperty } }, 2);
+    try testing.expectEqual(@as(u64, 20), resumePoint.lastValue);
+    try testing.expectEqual(@as(u64, 2), resumePoint.lastObjectKey);
 }
 
 test "sortByProperty compiles and runs against a ReadTransaction" {

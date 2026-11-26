@@ -92,9 +92,9 @@ test "cursorAfter reads the sort value at the row the key resolves to, after rel
     defer transaction.deinit();
     const fixture = try seedRelocated(&transaction, false);
 
-    const cursor = try query.cursorAfter(&transaction, fixture.catalogReference, .{ .sortKey = .{ .property = valueProperty } }, fixture.keyB);
-    try testing.expectEqual(@as(u64, 40), cursor.lastValue);
-    try testing.expectEqual(fixture.keyB, cursor.lastObjectKey);
+    const resumePoint = try query.cursorAfter(&transaction, fixture.catalogReference, .{ .sortKey = .{ .property = valueProperty } }, fixture.keyB);
+    try testing.expectEqual(@as(u64, 40), resumePoint.lastValue);
+    try testing.expectEqual(fixture.keyB, resumePoint.lastObjectKey);
 }
 
 test "sortByProperty reads each value at the row the key resolves to, after relocation" {
