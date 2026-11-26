@@ -29,6 +29,30 @@ jobs:
       - name: Build and run tests
         run: zig build test --summary all
 
+  mobile:
+    name: mobile build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-ios
+          - aarch64-ios-simulator
+          - x86_64-ios-simulator
+          - aarch64-linux-android
+          - x86_64-linux-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      # Build only. Zig cross-compiles the static library for these targets
+      # without an Apple SDK or the Android NDK, and nothing runs on them.
+      - name: Build the static library
+        run: zig build -Dtarget=${{ matrix.target }} -Drelease --summary all
+      - name: Check the library was installed
+        run: test -s zig-out/lib/libairdb.a
+
   fmt:
     name: fmt
     runs-on: ubuntu-latest
