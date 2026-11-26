@@ -6,7 +6,7 @@
 //! terminal. The slot the row left holds the poison value, so a read through
 //! the wrong index returns a value no hand-written answer contains.
 //!
-//! Fixture, properties primaryKey and value (unindexed). After the throwaway is
+//! Fixture, properties primaryKey and value (indexed only where a test says so). After the throwaway is
 //! deleted and B is relocated into its slot:
 //!   key 1 row 1: A, value 30
 //!   key 2 row 0: B, value 40 (row 2 is poisoned)
@@ -40,8 +40,8 @@ const Fixture = struct {
     keyC: u64,
 };
 
-fn seedRelocated(transaction: *WriteTransaction) !Fixture {
-    const definitions = [_]catalog.PropertyDefinition{ .{ .kind = .int }, .{ .kind = .int } };
+fn seedRelocated(transaction: *WriteTransaction, indexed: bool) !Fixture {
+    const definitions = [_]catalog.PropertyDefinition{ .{ .kind = .int }, .{ .kind = .int, .indexed = indexed } };
     var catalogReference = try catalog.createFromDefinitions(transaction, &definitions);
     const throwaway = try rows.insert(transaction, catalogReference, &.{ 1, 99 });
     catalogReference = throwaway.catalogReference;
@@ -72,7 +72,7 @@ test "aggregateInt reads each value at the row the key resolves to, after reloca
     defer database.deinit();
     var transaction = try database.beginWrite();
     defer transaction.deinit();
-    const fixture = try seedRelocated(&transaction);
+    const fixture = try seedRelocated(&transaction, false);
 
     const aggregate = try query.aggregateInt(&transaction, fixture.catalogReference, valueProperty, everything, testing.allocator);
     try testing.expectEqual(@as(u64, 3), aggregate.count);
@@ -90,7 +90,7 @@ test "cursorAfter reads the sort value at the row the key resolves to, after rel
     defer database.deinit();
     var transaction = try database.beginWrite();
     defer transaction.deinit();
-    const fixture = try seedRelocated(&transaction);
+    const fixture = try seedRelocated(&transaction, false);
 
     const cursor = try query.cursorAfter(&transaction, fixture.catalogReference, .{ .sortKey = .{ .property = valueProperty } }, fixture.keyB);
     try testing.expectEqual(@as(u64, 40), cursor.lastValue);
@@ -106,7 +106,7 @@ test "sortByProperty reads each value at the row the key resolves to, after relo
     defer database.deinit();
     var transaction = try database.beginWrite();
     defer transaction.deinit();
-    const fixture = try seedRelocated(&transaction);
+    const fixture = try seedRelocated(&transaction, false);
 
     // B and C tie at 40 and break by key. A poisoned B would sort last instead.
     var keys = [_]u64{ fixture.keyC, fixture.keyB, fixture.keyA };
@@ -123,12 +123,54 @@ test "where ordered by an unindexed property reads each value at the resolved ro
     defer database.deinit();
     var transaction = try database.beginWrite();
     defer transaction.deinit();
-    const fixture = try seedRelocated(&transaction);
+    const fixture = try seedRelocated(&transaction, false);
 
     var out = std.ArrayList(u64).empty;
     defer out.deinit(testing.allocator);
     try query.where(&transaction, fixture.catalogReference, .{ .ordering = .{ .sortKey = .{ .property = valueProperty } } }, &out, testing.allocator);
     try testing.expectEqualSlices(u64, &.{ fixture.keyA, fixture.keyB, fixture.keyC }, out.items);
+}
+
+test "where ordered by an indexed property keeps a relocated row, after relocation" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpPath(testing.allocator, &tmp, "reloc_where_indexed.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    var transaction = try database.beginWrite();
+    defer transaction.deinit();
+    const fixture = try seedRelocated(&transaction, true);
+
+    // The index yields keys and the walk resolves each to its row. Resolving B
+    // through its key would land on the dead abandoned slot and drop it.
+    var out = std.ArrayList(u64).empty;
+    defer out.deinit(testing.allocator);
+    try query.where(&transaction, fixture.catalogReference, .{ .ordering = .{ .sortKey = .{ .property = valueProperty } } }, &out, testing.allocator);
+    try testing.expectEqualSlices(u64, &.{ fixture.keyA, fixture.keyB, fixture.keyC }, out.items);
+}
+
+test "where over an index candidate set keeps a relocated row in both directions" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpPath(testing.allocator, &tmp, "reloc_where_candidates.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    var transaction = try database.beginWrite();
+    defer transaction.deinit();
+    const fixture = try seedRelocated(&transaction, true);
+
+    const equalsForty: query.Predicate = .{ .comparison = .{ .property = valueProperty, .operator = .eq, .value = .{ .int = 40 } } };
+    var ascending = std.ArrayList(u64).empty;
+    defer ascending.deinit(testing.allocator);
+    try query.where(&transaction, fixture.catalogReference, .{ .predicate = equalsForty }, &ascending, testing.allocator);
+    try testing.expectEqualSlices(u64, &.{ fixture.keyB, fixture.keyC }, ascending.items);
+
+    var descending = std.ArrayList(u64).empty;
+    defer descending.deinit(testing.allocator);
+    try query.where(&transaction, fixture.catalogReference, .{ .predicate = equalsForty, .ordering = .{ .order = .descending } }, &descending, testing.allocator);
+    try testing.expectEqualSlices(u64, &.{ fixture.keyC, fixture.keyB }, descending.items);
 }
 
 test "materializePage reads a relocated root's liveness, version and values at the resolved row" {
