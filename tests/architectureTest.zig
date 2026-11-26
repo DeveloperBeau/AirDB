@@ -603,9 +603,10 @@ fn appendTemplate(allocator: Allocator, out: *std.ArrayList(u8), template: []con
 test "scanner fuzz finds every real import and no hidden one" {
     const seed: u64 = testing.random_seed;
     // The test runner also passes this value as --seed. Printing it on a
-    // passing run writes to stderr, and zig build then marks the step with
-    // "w" and "failed command" even when every test passed. Print only on
-    // failure so a passing gate stays quiet. Repeat a failing run with --seed.
+    // passing run writes to stderr. On Zig 0.17.1, zig build then can show a
+    // "failed command" line even though every test passed and the exit code
+    // is 0. Print only on failure so a passing gate stays quiet. Repeat a
+    // failing run with --seed.
     errdefer std.debug.print("import scanner fuzz seed: {d}\n", .{seed});
     var prng = std.Random.DefaultPrng.init(seed);
     const random = prng.random();
