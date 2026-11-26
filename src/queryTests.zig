@@ -238,6 +238,7 @@ test "query returns stable object keys after relocation" {
 
     // Relocate the target into the freed slot; its objectKey is unchanged.
     catalogReference = (try relocationFixture.relocateAndPoison(&writeTransaction, catalogReference, targetObjectKey, deadRow)).catalogReference;
+    try testing.expect((try catalog.objectKeyToRow(&writeTransaction, catalogReference, targetObjectKey)).? != targetObjectKey);
 
     // A query that matches the relocated row must return its stable objectKey, and
     // that objectKey must resolve to the right values.
