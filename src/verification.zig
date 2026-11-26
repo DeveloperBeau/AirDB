@@ -138,7 +138,9 @@ fn auditCatalog(readTransaction: *ReadTransaction, catalogReference: Reference) 
 // Forward direction of the value-index invariant: walk the live rows (the
 // key-to-row index maps objectKey->row for live rows only) and assert each row's indexed
 // value carries that objectKey in the value index's inner set. A live row that the
-// index does not cover is error.ValueIndexMissingEntry. Any structural failure
+// index does not cover is error.ValueIndexMissingEntry. A key-to-row entry
+// that names a dead row is damage too: rows.delete tombstones the row and
+// removes its key in one step, so no writer leaves one behind. Any structural failure
 // reading the index/columns of an established typed catalog is itself a
 // divergence and reported the same way.
 fn auditValueIndexForward(readTransaction: *ReadTransaction, keyToRowIndexReference: Reference, valueIndexReference: Reference, propertyColumn: Reference, liveColumn: Reference) VerifyError!void {
@@ -148,7 +150,7 @@ fn auditValueIndexForward(readTransaction: *ReadTransaction, keyToRowIndexRefere
         propertyColumn: Reference,
         liveColumn: Reference,
         fn onEntry(self: @This(), objectKey: u64, row: u64) anyerror!void {
-            if ((try Column.get(self.readTransaction, self.liveColumn, row)) == 0) return; // defensive: skip dead
+            if ((try Column.get(self.readTransaction, self.liveColumn, row)) == 0) return error.ValueIndexMissingEntry; // key-to-row holds live rows only
             const value = try Column.get(self.readTransaction, self.propertyColumn, row);
             const inner = (try Index.get(self.readTransaction, self.valueIndexReference, value)) orelse return error.ValueIndexMissingEntry;
             if ((try Index.get(self.readTransaction, inner, objectKey)) == null) return error.ValueIndexMissingEntry;
@@ -205,7 +207,7 @@ fn auditBlobValueIndexForward(readTransaction: *ReadTransaction, keyToRowIndexRe
         propertyColumn: Reference,
         liveColumn: Reference,
         fn onEntry(self: @This(), objectKey: u64, row: u64) anyerror!void {
-            if ((try Column.get(self.readTransaction, self.liveColumn, row)) == 0) return; // defensive: skip dead
+            if ((try Column.get(self.readTransaction, self.liveColumn, row)) == 0) return error.ValueIndexMissingEntry; // key-to-row holds live rows only
             const raw = try Column.get(self.readTransaction, self.propertyColumn, row);
             var keyBuffer: [blobIndexKey.maxLength]u8 = undefined;
             const key = try blobIndexKey.read(self.readTransaction, raw, &keyBuffer);
@@ -291,7 +293,7 @@ fn auditBacklinksForward(readTransaction: *ReadTransaction, catalogView: catalog
             if ((try Index.get(self.readTransaction, inner, sourceObjectKey)) == null) return error.BacklinkMissingEntry;
         }
         fn onEntry(self: @This(), objectKey: u64, row: u64) anyerror!void {
-            if ((try Column.get(self.readTransaction, self.liveColumn, row)) == 0) return; // defensive: skip dead
+            if ((try Column.get(self.readTransaction, self.liveColumn, row)) == 0) return error.BacklinkMissingEntry; // key-to-row holds live rows only
             const raw = try Column.get(self.readTransaction, self.propertyColumn, row);
             if (self.kind == .link) {
                 if (raw == 0) return; // null link

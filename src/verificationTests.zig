@@ -17,6 +17,7 @@ const typeDirectory = @import("schema/typeDirectory.zig");
 const typeRouting = @import("schema/typeRouting.zig");
 const rows = @import("records/rows.zig");
 const Index = @import("trees/index.zig");
+const Column = @import("trees/column.zig");
 
 fn tmpFilePath(allocator: std.mem.Allocator, tmp: *testing.TmpDir, name: []const u8) ![]const u8 {
     var pathBuffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -75,6 +76,18 @@ fn writeDirectoryNode(writeTransaction: *WriteTransaction, count: u16, catalogRe
         std.mem.writeInt(u64, allocation.bytes[2 + typeIndex * 8 ..][0..8], catalogReference, .little);
     }
     return allocation.reference;
+}
+
+// Tombstone a row's live bit but keep its key-to-row entry, the divergence
+// no writer produces (rows.delete removes the key in the same step).
+fn tombstoneKeepingKey(writeTransaction: *WriteTransaction, directoryReference: Reference, primaryKey: u64) !Reference {
+    const catalogReference = try typeDirectory.catalogReference(writeTransaction, directoryReference, 0);
+    const objectKey = (try catalog.primaryKeyToObjectKey(writeTransaction, catalogReference, primaryKey)).?;
+    const row = (try catalog.objectKeyToRow(writeTransaction, catalogReference, objectKey)).?;
+    var snapshot = try catalog.CatalogSnapshot.load(writeTransaction, catalogReference);
+    snapshot.liveColumnReference = try Column.set(writeTransaction, snapshot.liveColumnReference, row, 0);
+    const newCatalog = try snapshot.replace(writeTransaction);
+    return typeDirectory.setCatalogReference(writeTransaction, directoryReference, 0, newCatalog);
 }
 
 // ---------------------------------------------------------------------------
@@ -442,4 +455,70 @@ test "a database file with the old airdb_0003 magic is refused with error.BadMag
         try file.writePositionalAll(testing.io, &oldMagic, 0);
     }
     try testing.expectError(error.BadMagic, Database.open(testing.allocator, path));
+}
+
+// ---------------------------------------------------------------------------
+// Key-to-row entries that name a dead row
+// ---------------------------------------------------------------------------
+
+test "verifyIntegrity reports a key-to-row entry that names a dead row with an indexed int property" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpFilePath(testing.allocator, &tmp, "dead_row_int.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    try commitIndexedDirectory(&database);
+    var writeTransaction = try database.beginWrite();
+    const newDirectory = try tombstoneKeepingKey(&writeTransaction, database.activeRoot, 3);
+    writeTransaction.setRoot(newDirectory, .typeDirectory);
+    _ = try writeTransaction.commit();
+    try testing.expectError(error.ValueIndexMissingEntry, verification.verifyIntegrity(&database));
+}
+
+test "verifyIntegrity reports a key-to-row entry that names a dead row with an indexed blob property" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpFilePath(testing.allocator, &tmp, "dead_row_blob.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    {
+        var writeTransaction = try database.beginWrite();
+        var directoryReference = try typeDirectory.createTypes(&writeTransaction, &.{&.{ .{ .kind = .int }, .{ .kind = .blob, .indexed = true } }}, &.{false});
+        directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = 1 }, .{ .bytes = "alpha" } })).directoryReference;
+        directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = 2 }, .{ .bytes = "beta" } })).directoryReference;
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
+        _ = try writeTransaction.commit();
+    }
+    try verification.verifyIntegrity(&database); // clean before corruption
+    var writeTransaction = try database.beginWrite();
+    const newDirectory = try tombstoneKeepingKey(&writeTransaction, database.activeRoot, 1);
+    writeTransaction.setRoot(newDirectory, .typeDirectory);
+    _ = try writeTransaction.commit();
+    try testing.expectError(error.ValueIndexMissingEntry, verification.verifyIntegrity(&database));
+}
+
+test "verifyIntegrity reports a key-to-row entry that names a dead row with a link property" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpFilePath(testing.allocator, &tmp, "dead_row_link.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    {
+        var writeTransaction = try database.beginWrite();
+        var directoryReference = try typeDirectory.createTypes(&writeTransaction, &.{
+            &.{ .{ .kind = .int }, .{ .kind = .link, .linkTarget = 0 } },
+        }, &.{false});
+        directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = 1 }, .{ .link = null } })).directoryReference;
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
+        _ = try writeTransaction.commit();
+    }
+    try verification.verifyIntegrity(&database); // clean before corruption
+    var writeTransaction = try database.beginWrite();
+    const newDirectory = try tombstoneKeepingKey(&writeTransaction, database.activeRoot, 1);
+    writeTransaction.setRoot(newDirectory, .typeDirectory);
+    _ = try writeTransaction.commit();
+    try testing.expectError(error.BacklinkMissingEntry, verification.verifyIntegrity(&database));
 }
