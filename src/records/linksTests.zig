@@ -30,7 +30,7 @@ const verification = @import("../verification.zig");
 const typeDirectory = @import("../schema/typeDirectory.zig");
 const typeRouting = @import("../schema/typeRouting.zig");
 const rows = @import("rows.zig");
-const relocateRow = @import("../storage/relocation.zig").relocateRow;
+const relocationFixture = @import("../storage/relocationFixtureTests.zig").RelocationFixtureTests;
 const Reference = @import("../storage/reference.zig").Reference;
 
 fn objTmpPath(allocator: std.mem.Allocator, tmp: *testing.TmpDir, name: []const u8) ![]const u8 {
@@ -1004,7 +1004,7 @@ test "L11: an inbound nullify of a relocated source indexes the objectKey, not t
     var out: [2]u64 = undefined;
     const throwawayVersion = (try rows.getByPrimaryKey(&writeTransaction, catalogReference, 99, &out)).?;
     catalogReference = (try rows.delete(&writeTransaction, catalogReference, 99, throwawayVersion)).ok;
-    catalogReference = try relocateRow(&writeTransaction, catalogReference, sourceObject.objectKey, deadRow);
+    catalogReference = (try relocationFixture.relocateAndPoison(&writeTransaction, catalogReference, sourceObject.objectKey, deadRow)).catalogReference;
     try testing.expect((try catalog.objectKeyToRow(&writeTransaction, catalogReference, sourceObject.objectKey)).? != sourceObject.objectKey);
 
     // Move the source's link from otherTarget to the real target under test.

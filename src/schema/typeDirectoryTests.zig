@@ -570,8 +570,8 @@ test "directory delete works after relocating the target" {
     const throwawayVersion = (try get(&writeTransaction, directoryReference, 0, 99, &vbuf)).?;
     const throwawayDelete = try delete(&writeTransaction, directoryReference, 0, 99, throwawayVersion);
     directoryReference = throwawayDelete.ok;
-    const relocated = try relocation.relocateRow(&writeTransaction, try catalogReference(&writeTransaction, directoryReference, 0), authorObjectKey, deadRow);
-    directoryReference = try setCatalogReference(&writeTransaction, directoryReference, 0, relocated);
+    const relocated = try relocationFixture.relocateAndPoison(&writeTransaction, try catalogReference(&writeTransaction, directoryReference, 0), authorObjectKey, deadRow);
+    directoryReference = try setCatalogReference(&writeTransaction, directoryReference, 0, relocated.catalogReference);
 
     // Deleting the author must nullify the book's link, proving the delete used
     // the object key rather than a stale physical row.
@@ -583,7 +583,7 @@ test "directory delete works after relocating the target" {
     writeTransaction.deinit();
 }
 
-const relocation = @import("../storage/relocation.zig");
+const relocationFixture = @import("../storage/relocationFixtureTests.zig").RelocationFixtureTests;
 
 test "a self-linked object is deletable across transactions" {
     // Two regressions in one shape: (a) a block-rule self-link counted itself

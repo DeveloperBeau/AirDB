@@ -133,3 +133,273 @@ pub fn parseInner(bytes: []const u8) error{Corrupt}!InnerView {
     if (bytes.len < headerSize + @as(usize, childCount) * innerStride) return error.Corrupt;
     return .{ .bytes = bytes, .childCount = childCount };
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+/// Build a buffer of `total` zero bytes with a hand-written header, so counts
+/// the encoders refuse (above the cap) can be produced.
+fn headerBuffer(total: usize, kind: u8, count: u16) ![]u8 {
+    const buffer = try testing.allocator.alloc(u8, total);
+    @memset(buffer, 0);
+    buffer[0] = kind;
+    std.mem.writeInt(u16, buffer[1..3], count, .little);
+    return buffer;
+}
+
+fn expectLeafMatchesBytes(bytes: []const u8, view: LeafView) !void {
+    try testing.expectEqual(std.mem.readInt(u16, bytes[1..3], .little), view.count);
+    try testing.expect(view.count <= leafCap);
+    try testing.expect(bytes.len >= headerSize + @as(usize, view.count) * 16);
+    for (0..view.count) |i| {
+        try testing.expectEqual(std.mem.readInt(u64, bytes[headerSize + i * 16 ..][0..8], .little), view.key(i));
+        try testing.expectEqual(std.mem.readInt(u64, bytes[headerSize + i * 16 + 8 ..][0..8], .little), view.value(i));
+    }
+}
+
+fn expectInnerMatchesBytes(bytes: []const u8, view: InnerView) !void {
+    try testing.expectEqual(std.mem.readInt(u16, bytes[1..3], .little), view.childCount);
+    try testing.expect(view.childCount <= fanout);
+    try testing.expect(bytes.len >= headerSize + @as(usize, view.childCount) * innerStride);
+    for (0..view.childCount) |i| {
+        const base = headerSize + i * innerStride;
+        try testing.expectEqual(std.mem.readInt(u64, bytes[base..][0..8], .little), view.childReference(i));
+        try testing.expectEqual(std.mem.readInt(u64, bytes[base + 8 ..][0..8], .little), view.lowKey(i));
+        try testing.expectEqual(std.mem.readInt(u64, bytes[base + 16 ..][0..8], .little), view.subtreeCount(i));
+    }
+}
+
+test "index node fuzz: random valid leaf round-trips through parseLeaf" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("index leaf round-trip fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+    var buffer: [leafNodeSize]u8 = undefined;
+    var keys: [leafCap]u64 = undefined;
+    var vals: [leafCap]u64 = undefined;
+    for (0..300) |iteration| {
+        const count: usize = switch (iteration % 4) {
+            0 => 0,
+            1 => leafCap,
+            else => random.uintAtMost(usize, leafCap),
+        };
+        for (0..count) |i| {
+            keys[i] = random.int(u64);
+            vals[i] = random.int(u64);
+        }
+        const used = encodeLeaf(&buffer, keys[0..count], vals[0..count]);
+        try testing.expectEqual(headerSize + count * 16, used);
+        const view = try parseLeaf(buffer[0..used]);
+        try testing.expectEqual(@as(u16, @intCast(count)), view.count);
+        for (0..count) |i| {
+            try testing.expectEqual(keys[i], view.key(i));
+            try testing.expectEqual(vals[i], view.value(i));
+        }
+        // lowerBound on a sorted copy must agree with a linear scan.
+        std.mem.sort(u64, keys[0..count], {}, std.sort.asc(u64));
+        _ = encodeLeaf(&buffer, keys[0..count], vals[0..count]);
+        const sorted = try parseLeaf(buffer[0..used]);
+        const probe = random.int(u64);
+        var expected: usize = 0;
+        while (expected < count and keys[expected] < probe) expected += 1;
+        try testing.expectEqual(expected, sorted.lowerBound(probe));
+    }
+}
+
+test "index node fuzz: random valid inner round-trips through parseInner" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("index inner round-trip fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+    var buffer: [innerNodeSize]u8 = undefined;
+    var references: [fanout]u64 = undefined;
+    var lows: [fanout]u64 = undefined;
+    var counts: [fanout]u64 = undefined;
+    for (0..300) |iteration| {
+        const count: usize = switch (iteration % 4) {
+            0 => 0,
+            1 => fanout,
+            else => random.uintAtMost(usize, fanout),
+        };
+        var total: u64 = 0;
+        for (0..count) |i| {
+            references[i] = random.int(u64);
+            lows[i] = random.int(u64);
+            counts[i] = random.int(u32);
+            total += counts[i];
+        }
+        const used = encodeInner(&buffer, references[0..count], lows[0..count], counts[0..count]);
+        try testing.expectEqual(headerSize + count * innerStride, used);
+        const view = try parseInner(buffer[0..used]);
+        try testing.expectEqual(@as(u16, @intCast(count)), view.childCount);
+        for (0..count) |i| {
+            try testing.expectEqual(references[i], view.childReference(i));
+            try testing.expectEqual(lows[i], view.lowKey(i));
+            try testing.expectEqual(counts[i], view.subtreeCount(i));
+        }
+        try testing.expectEqual(total, view.totalCount());
+    }
+}
+
+test "index node fuzz: mutated and truncated leaf bytes are rejected or match the bytes" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("index leaf mutation fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+    const buffer = try testing.allocator.alloc(u8, leafNodeSize + 32);
+    defer testing.allocator.free(buffer);
+    for (0..300) |_| {
+        random.bytes(buffer);
+        buffer[0] = kindLeaf;
+        // Bias the count toward the boundary region so both sides are hit.
+        const count: u16 = @intCast(random.uintAtMost(usize, leafCap + 3));
+        std.mem.writeInt(u16, buffer[1..3], count, .little);
+        for (0..random.uintAtMost(usize, 4)) |_| {
+            buffer[random.uintLessThan(usize, 3)] = random.int(u8);
+        }
+        const len = random.uintAtMost(usize, buffer.len);
+        const bytes = buffer[0..len];
+        if (parseLeaf(bytes)) |view| {
+            try expectLeafMatchesBytes(bytes, view);
+        } else |err| {
+            try testing.expectEqual(error.Corrupt, err);
+            const ok = len >= headerSize and bytes[0] == kindLeaf and
+                std.mem.readInt(u16, bytes[1..3], .little) <= leafCap and
+                len >= headerSize + @as(usize, std.mem.readInt(u16, bytes[1..3], .little)) * 16;
+            try testing.expect(!ok);
+        }
+    }
+}
+
+test "index node fuzz: mutated and truncated inner bytes are rejected or match the bytes" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("index inner mutation fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+    const buffer = try testing.allocator.alloc(u8, innerNodeSize + 48);
+    defer testing.allocator.free(buffer);
+    for (0..300) |_| {
+        random.bytes(buffer);
+        buffer[0] = kindInner;
+        const count: u16 = @intCast(random.uintAtMost(usize, fanout + 3));
+        std.mem.writeInt(u16, buffer[1..3], count, .little);
+        for (0..random.uintAtMost(usize, 4)) |_| {
+            buffer[random.uintLessThan(usize, 3)] = random.int(u8);
+        }
+        const len = random.uintAtMost(usize, buffer.len);
+        const bytes = buffer[0..len];
+        if (parseInner(bytes)) |view| {
+            try expectInnerMatchesBytes(bytes, view);
+        } else |err| {
+            try testing.expectEqual(error.Corrupt, err);
+            const ok = len >= headerSize and bytes[0] == kindInner and
+                std.mem.readInt(u16, bytes[1..3], .little) <= fanout and
+                len >= headerSize + @as(usize, std.mem.readInt(u16, bytes[1..3], .little)) * innerStride;
+            try testing.expect(!ok);
+        }
+    }
+}
+
+test "index node pin: parseLeaf accepts leafCount == leafCap in an exact-size buffer and reads every pair" {
+    const buffer = try headerBuffer(headerSize + @as(usize, leafCap) * 16, kindLeaf, leafCap);
+    defer testing.allocator.free(buffer);
+    for (0..leafCap) |i| {
+        std.mem.writeInt(u64, buffer[headerSize + i * 16 ..][0..8], 1000 + i, .little);
+        std.mem.writeInt(u64, buffer[headerSize + i * 16 + 8 ..][0..8], 5000 + i, .little);
+    }
+    const view = try parseLeaf(buffer);
+    try testing.expectEqual(leafCap, view.count);
+    for (0..leafCap) |i| {
+        try testing.expectEqual(@as(u64, 1000 + i), view.key(i));
+        try testing.expectEqual(@as(u64, 5000 + i), view.value(i));
+    }
+}
+
+test "index node pin: parseLeaf rejects leafCount == leafCap + 1 even when the buffer holds 65 entries" {
+    const buffer = try headerBuffer(headerSize + (@as(usize, leafCap) + 1) * 16 + 16, kindLeaf, leafCap + 1);
+    defer testing.allocator.free(buffer);
+    try testing.expectError(error.Corrupt, parseLeaf(buffer));
+}
+
+test "index node pin: parseInner accepts childCount == fanout in an exact-size buffer and reads every entry" {
+    const buffer = try headerBuffer(headerSize + @as(usize, fanout) * innerStride, kindInner, fanout);
+    defer testing.allocator.free(buffer);
+    for (0..fanout) |i| {
+        const base = headerSize + i * innerStride;
+        std.mem.writeInt(u64, buffer[base..][0..8], 100 + i, .little);
+        std.mem.writeInt(u64, buffer[base + 8 ..][0..8], 200 + i, .little);
+        std.mem.writeInt(u64, buffer[base + 16 ..][0..8], 300 + i, .little);
+    }
+    const view = try parseInner(buffer);
+    try testing.expectEqual(fanout, view.childCount);
+    for (0..fanout) |i| {
+        try testing.expectEqual(@as(u64, 100 + i), view.childReference(i));
+        try testing.expectEqual(@as(u64, 200 + i), view.lowKey(i));
+        try testing.expectEqual(@as(u64, 300 + i), view.subtreeCount(i));
+    }
+}
+
+test "index node pin: parseInner rejects childCount == fanout + 1 even when the buffer holds 65 entries" {
+    const buffer = try headerBuffer(headerSize + (@as(usize, fanout) + 1) * innerStride + innerStride, kindInner, fanout + 1);
+    defer testing.allocator.free(buffer);
+    try testing.expectError(error.Corrupt, parseInner(buffer));
+}
+
+test "index node pin: parseLeaf needs exactly headerSize + count*16 bytes for count 0, 1, 2 and leafCap" {
+    for ([_]u16{ 0, 1, 2, leafCap }) |count| {
+        const exact = headerSize + @as(usize, count) * 16;
+        const buffer = try headerBuffer(exact, kindLeaf, count);
+        defer testing.allocator.free(buffer);
+        const view = try parseLeaf(buffer);
+        try testing.expectEqual(count, view.count);
+        if (count > 0) {
+            try testing.expectError(error.Corrupt, parseLeaf(buffer[0 .. exact - 1]));
+        }
+    }
+}
+
+test "index node pin: parseInner needs exactly headerSize + count*24 bytes for count 0, 1, 2 and fanout" {
+    for ([_]u16{ 0, 1, 2, fanout }) |count| {
+        const exact = headerSize + @as(usize, count) * innerStride;
+        const buffer = try headerBuffer(exact, kindInner, count);
+        defer testing.allocator.free(buffer);
+        const view = try parseInner(buffer);
+        try testing.expectEqual(count, view.childCount);
+        if (count > 0) {
+            try testing.expectError(error.Corrupt, parseInner(buffer[0 .. exact - 1]));
+        }
+    }
+}
+
+test "index node pin: parseLeaf and parseInner reject every length below headerSize" {
+    const leafBytes = [_]u8{ kindLeaf, 0, 0 };
+    const innerBytes = [_]u8{ kindInner, 0, 0 };
+    for (0..headerSize) |len| {
+        try testing.expectError(error.Corrupt, parseLeaf(leafBytes[0..len]));
+        try testing.expectError(error.Corrupt, parseInner(innerBytes[0..len]));
+    }
+    // The header alone, with a zero count, is the smallest valid node.
+    try testing.expectEqual(@as(u16, 0), (try parseLeaf(&leafBytes)).count);
+    try testing.expectEqual(@as(u16, 0), (try parseInner(&innerBytes)).childCount);
+}
+
+test "index node pin: parseLeaf rejects every non-leaf kind byte and parseInner every non-inner kind byte" {
+    var buffer: [leafNodeSize + innerNodeSize]u8 = undefined;
+    for (0..256) |kind| {
+        @memset(&buffer, 0);
+        buffer[0] = @intCast(kind);
+        if (kind == kindLeaf) {
+            _ = try parseLeaf(&buffer);
+        } else {
+            try testing.expectError(error.Corrupt, parseLeaf(&buffer));
+        }
+        if (kind == kindInner) {
+            _ = try parseInner(&buffer);
+        } else {
+            try testing.expectError(error.Corrupt, parseInner(&buffer));
+        }
+    }
+}
