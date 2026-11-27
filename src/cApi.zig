@@ -59,8 +59,8 @@ fn commitErrCode(self: *DatabaseHandle) i64 {
 
 /// Open the database at `path`, creating it with an int-property object type of
 /// `propertyCount` properties (property 0 is the primary key) if it does not exist.
-/// On an existing database the stored property count is used. Returns null on
-/// failure.
+/// On an existing database the stored property count is used. An existing file
+/// whose root is not a single catalog returns null. Returns null on failure.
 export fn airdb_open(pathPtr: [*:0]const u8, propertyCount: u16) ?*DatabaseHandle {
     const path = std.mem.span(pathPtr);
     // The storage layer requires an absolute path. Reject anything else here so
@@ -100,6 +100,8 @@ fn abandonHandle(self: *DatabaseHandle) ?*DatabaseHandle {
 // and returns null.
 fn adoptExisting(self: *DatabaseHandle, opened: Database) ?*DatabaseHandle {
     self.database = opened;
+    // The root must be a single catalog; a type directory or blob is not one.
+    if (self.database.activeRootKind != .catalog) return abandonHandle(self);
     var readTransaction = self.database.beginRead() catch return abandonHandle(self);
     const propertyCount = catalog.loadPropertyCount(&readTransaction, readTransaction.root()) catch {
         readTransaction.end();
@@ -123,7 +125,7 @@ fn createFresh(self: *DatabaseHandle, path: []const u8, propertyCount: u16) ?*Da
         writeTransaction.deinit();
         return abandonHandle(self);
     };
-    writeTransaction.setRoot(catalogReference);
+    writeTransaction.setRoot(catalogReference, .catalog);
     _ = writeTransaction.commit() catch return abandonHandle(self);
     self.propertyCount = propertyCount;
     return self;
@@ -152,7 +154,7 @@ export fn airdb_insert(handle: ?*DatabaseHandle, values: [*]const u64, length: u
         writeTransaction.deinit();
         return if (err == error.DuplicateKey) AIRDB_E_DUPLICATE else AIRDB_E_GENERIC;
     };
-    writeTransaction.setRoot(result.catalogReference);
+    writeTransaction.setRoot(result.catalogReference, .catalog);
     _ = writeTransaction.commit() catch return commitErrCode(self);
     return @intCast(result.objectKey);
 }
@@ -200,7 +202,7 @@ export fn airdb_update(handle: ?*DatabaseHandle, values: [*]const u64, length: u
     };
     switch (result) {
         .ok => |ok| {
-            writeTransaction.setRoot(ok.catalogReference);
+            writeTransaction.setRoot(ok.catalogReference, .catalog);
             _ = writeTransaction.commit() catch return commitErrCode(self);
             return AIRDB_OK;
         },
@@ -234,7 +236,7 @@ export fn airdb_delete(handle: ?*DatabaseHandle, primaryKey: u64) i64 {
     };
     switch (result) {
         .ok => |newCatalog| {
-            writeTransaction.setRoot(newCatalog);
+            writeTransaction.setRoot(newCatalog, .catalog);
             _ = writeTransaction.commit() catch return commitErrCode(self);
             return AIRDB_OK;
         },
@@ -282,7 +284,7 @@ export fn airdb_bulk_insert(handle: ?*DatabaseHandle, rowsFlat: [*]const u64, ro
             else => AIRDB_E_GENERIC,
         };
     };
-    writeTransaction.setRoot(newCatalog);
+    writeTransaction.setRoot(newCatalog, .catalog);
     // commit releases the lock on BOTH its success and its own error paths, so
     // do not unlock again here.
     _ = writeTransaction.commit() catch return commitErrCode(self);
@@ -322,7 +324,7 @@ export fn airdb_bulk_append(handle: ?*DatabaseHandle, rowsFlat: [*]const u64, ro
             else => AIRDB_E_GENERIC,
         };
     };
-    writeTransaction.setRoot(newCatalog);
+    writeTransaction.setRoot(newCatalog, .catalog);
     // commit releases the lock on BOTH its success and its own error paths, so
     // do not unlock again here.
     _ = writeTransaction.commit() catch return commitErrCode(self);
@@ -465,7 +467,7 @@ export fn airdb_commit(transaction: ?*Transaction) i64 {
         allocator.destroy(handle);
         return AIRDB_E_GENERIC;
     }
-    handle.writeTransaction.setRoot(handle.catalogReference);
+    handle.writeTransaction.setRoot(handle.catalogReference, .catalog);
     _ = handle.writeTransaction.commit() catch {
         // commit already released the lock per WriteTransaction.commit's contract; just
         // free the handle. Do NOT double-unlock.
@@ -594,6 +596,55 @@ test "ffi: open of a corrupt database returns null and never truncates the file"
     _ = try file.readPositionalAll(io, &magic, 0);
     // The corrupted magic is still there: nothing rewrote the header.
     try testing.expectEqualSlices(u8, &[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF }, &magic);
+}
+
+test "ffi: open of a file with a wrong root kind returns null, leaves the file unchanged and releases the handle" {
+    const typeDirectory = @import("schema/typeDirectory.zig");
+    const RootKind = @import("storage/rootKind.zig").RootKind;
+    const Case = enum { typeDirectoryRoot, junkBlob, catalogNodeAsBlob };
+    inline for (comptime std.enums.values(Case)) |case| {
+        const kind: RootKind = switch (case) {
+            .typeDirectoryRoot => .typeDirectory,
+            else => .blob,
+        };
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const path = try ffiTmpPathZ(testing.allocator, &tmp, "wrong_root.airdb");
+        defer testing.allocator.free(path);
+        {
+            var database = try Database.create(testing.allocator, path);
+            defer database.deinit();
+            var writeTransaction = try database.beginWrite();
+            const reference = switch (case) {
+                .typeDirectoryRoot => try typeDirectory.createTypes(&writeTransaction, &.{&.{.{ .kind = .int }}}, &.{false}),
+                // A real catalog node, as a fresh airdb_open builds it, but tagged blob: only the kind guard refuses it.
+                .catalogNodeAsBlob => try catalog.create(&writeTransaction, 2),
+                .junkBlob => blk: {
+                    const allocation = try writeTransaction.alloc(8);
+                    @memcpy(allocation.bytes, "HELLOAID");
+                    break :blk allocation.reference;
+                },
+            };
+            writeTransaction.setRoot(reference, kind);
+            _ = try writeTransaction.commit();
+        }
+        const before = try tmp.dir.readFileAlloc(testing.io, "wrong_root.airdb", testing.allocator, .unlimited);
+        defer testing.allocator.free(before);
+
+        // Repeat so a leaked handle per refusal would accumulate.
+        for (0..3) |_| try testing.expect(airdb_open(path.ptr, 2) == null);
+
+        // A refused open must detach: only this reopen is attached.
+        {
+            var reopened = try Database.open(testing.allocator, path);
+            defer reopened.deinit();
+            try testing.expectEqual(@as(u32, 1), reopened.coordination.attachCount());
+        }
+
+        const after = try tmp.dir.readFileAlloc(testing.io, "wrong_root.airdb", testing.allocator, .unlimited);
+        defer testing.allocator.free(after);
+        try testing.expectEqualSlices(u8, before, after);
+    }
 }
 
 test "ffi transaction: begin then abort releases the write lock" {

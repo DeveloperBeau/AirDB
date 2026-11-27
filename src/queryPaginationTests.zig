@@ -890,7 +890,7 @@ var p29ExtraRowsCommitted = false;
 fn commitTwentyMoreRows(database: *Database) !void {
     var writeTransaction = try database.beginWrite();
     const directoryReference = try appendRowsToDirectory(&writeTransaction, writeTransaction.newRoot, 30, 20);
-    writeTransaction.setRoot(directoryReference);
+    writeTransaction.setRoot(directoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
     p29ExtraRowsCommitted = true;
 }
@@ -903,7 +903,7 @@ fn checkCursorStabilityUnderCommits(allocator: std.mem.Allocator, path: []const 
     {
         var writeTransaction = try database.beginWrite();
         const directoryReference = try createSeededDirectory(&writeTransaction, 30);
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -954,7 +954,7 @@ fn commitRowBeforeCursorPosition(database: *Database) !void {
     const result = try typeRouting.insert(&writeTransaction, writeTransaction.newRoot, 0, &.{
         .{ .int = 1000 }, .{ .int = 0 }, .{ .int = 1000 },
     });
-    writeTransaction.setRoot(result.directoryReference);
+    writeTransaction.setRoot(result.directoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
     p40BelowCursorObjectKey = result.objectKey;
 }
@@ -969,7 +969,7 @@ test "P40: a row committed with a sort value before the cursor's resumed positio
     {
         var writeTransaction = try database.beginWrite();
         const directoryReference = try createSeededDirectory(&writeTransaction, 30);
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -1002,7 +1002,7 @@ test "P30: a pinned snapshot gives a fully consistent multi-page scroll" {
     {
         var writeTransaction = try database.beginWrite();
         const directoryReference = try createSeededDirectory(&writeTransaction, 25);
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     const pinnedVersion = database.horizon();
@@ -1017,7 +1017,7 @@ test "P30: a pinned snapshot gives a fully consistent multi-page scroll" {
     {
         var writeTransaction = try database.beginWrite();
         const directoryReference = try appendRowsToDirectory(&writeTransaction, writeTransaction.newRoot, 25, 15);
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 

@@ -75,7 +75,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
     var catalogReference: Reference = blk: {
         var writeTransaction = try database.beginWrite();
         const catalogReference = try catalog.create(&writeTransaction, 2);
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
         break :blk catalogReference;
     };
@@ -89,7 +89,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
             const inserted = try rows.insert(&writeTransaction, catalogReference, &.{ primaryKey, primaryKey });
             catalogReference = inserted.catalogReference;
         }
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
 
@@ -131,7 +131,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
                 };
             }
 
-            writeTransaction.setRoot(catalogReference);
+            writeTransaction.setRoot(catalogReference, .catalog);
             _ = try writeTransaction.commit();
 
             nextPrimaryKey += key;
@@ -146,7 +146,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
             const res = try compaction.compactStep(&writeTransaction, catalogReference, 0, compactBudget);
             const elapsedNs: u64 = @intCast(nowNs(io) - startNs);
             catalogReference = res.catalogReference;
-            writeTransaction.setRoot(catalogReference);
+            writeTransaction.setRoot(catalogReference, .catalog);
             _ = try writeTransaction.commit();
 
             try stepLat.add(alloc, elapsedNs);

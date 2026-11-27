@@ -129,7 +129,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
     {
         var writeTransaction = try pitrDatabase.beginWrite();
         const catalogReference = try catalog.create(&writeTransaction, 2);
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
 
@@ -146,7 +146,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
             const result = try rows.insert(&writeTransaction, catalogReference, &.{ primaryKey, primaryKey *% 7 });
             catalogReference = result.catalogReference;
         }
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         const version = try writeTransaction.commit();
         if (inserted == 0) vOld = version; // primaryKeys [0, pitrBatch) exist from here on
         inserted += thisBatch;
