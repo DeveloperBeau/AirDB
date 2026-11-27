@@ -498,7 +498,7 @@ test "package root exports exactly the application API plus internal" {
         "typeDirectory", "typeRouting",     "catalog",          "objects",
         "query",         "blob",            "collections",      "links",
         "bulk",          "migrations",      "maintenance",      "verification",
-        "compaction",    "internal",
+        "compaction",    "RootKind",        "internal",
     });
 }
 
