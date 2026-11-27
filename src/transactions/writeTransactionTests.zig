@@ -26,7 +26,7 @@ fn churnLogicalSize(path: []const u8, retain: u64, rounds: u64) !u64 {
     var catalogReference: Reference = blk: {
         var writeTransaction = try database.beginWrite();
         const valueC = try catalog.create(&writeTransaction, 1);
-        writeTransaction.setRoot(valueC);
+        writeTransaction.setRoot(valueC, .catalog);
         _ = try writeTransaction.commit();
         break :blk valueC;
     };
@@ -38,7 +38,7 @@ fn churnLogicalSize(path: []const u8, retain: u64, rounds: u64) !u64 {
             catalogReference = database.activeRoot; // reload the committed catalog reference
             const inserted = try rows.insert(&writeTransaction, catalogReference, &.{index});
             catalogReference = inserted.catalogReference;
-            writeTransaction.setRoot(catalogReference);
+            writeTransaction.setRoot(catalogReference, .catalog);
             _ = try writeTransaction.commit();
         }
         {
@@ -50,7 +50,7 @@ fn churnLogicalSize(path: []const u8, retain: u64, rounds: u64) !u64 {
                 .ok => |newCatalog| newCatalog,
                 else => unreachable,
             };
-            writeTransaction.setRoot(catalogReference);
+            writeTransaction.setRoot(catalogReference, .catalog);
             _ = try writeTransaction.commit();
         }
     }
@@ -72,7 +72,7 @@ test "steady-state batched inserts keep the free list bounded" {
     {
         var writeTransaction = try database.beginWrite();
         const catalogReference = try catalog.create(&writeTransaction, 2);
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     const batches: usize = 10;
@@ -87,7 +87,7 @@ test "steady-state batched inserts keep the free list bounded" {
             catalogReference = (try rows.insert(&writeTransaction, catalogReference, &.{ primaryKey, primaryKey })).catalogReference;
             primaryKey += 1;
         }
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     // The committed list legitimately tracks the copy-on-write working set (the
@@ -114,7 +114,7 @@ test "an abandoned transaction's bump allocations are rolled back" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BASELINE");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     const sizeBefore = database.logicalSize();
@@ -133,7 +133,7 @@ test "an abandoned transaction's bump allocations are rolled back" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "AFTERAB_");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     // One 8-byte node plus the free-list node: logical size grows by well under
@@ -206,7 +206,7 @@ test "a committed node freed within a transaction is not reused mid-transaction"
     { // commit a node so it belongs to a committed version
         var writeTransaction0 = try database.beginWrite();
         const allocation = try writeTransaction0.alloc(64);
-        writeTransaction0.setRoot(allocation.reference);
+        writeTransaction0.setRoot(allocation.reference, .blob);
         _ = try writeTransaction0.commit();
     }
     const committedReference = database.activeRoot;
@@ -231,7 +231,7 @@ test "single instance reuse works through the global horizon" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "AAAAAAAA");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     const oldRoot = database.activeRoot;
@@ -240,7 +240,7 @@ test "single instance reuse works through the global horizon" {
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BBBBBBBB");
         try writeTransaction.free(oldRoot, 8);
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     {

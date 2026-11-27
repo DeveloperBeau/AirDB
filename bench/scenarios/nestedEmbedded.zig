@@ -87,7 +87,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
     {
         var writeTransaction = try database.beginWrite();
         const directoryReference = try typeDirectory.createTypes(&writeTransaction, &chainSchema, &chainEmbedded);
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -138,7 +138,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
                     try createLat.add(alloc, elapsedNs);
                     try combined.add(alloc, elapsedNs);
                 }
-                writeTransaction.setRoot(directoryReference);
+                writeTransaction.setRoot(directoryReference, .typeDirectory);
                 _ = try writeTransaction.commit();
                 inserted += thisBatch;
             }

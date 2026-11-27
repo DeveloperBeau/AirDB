@@ -839,3 +839,251 @@ test "createDefs records a per-property deletion rule" {
     try testing.expectEqual(@as(u16, 2), view.linkTarget(1));
     writeTransaction.deinit();
 }
+
+fn fuzzPropertyCount(random: std.Random, iteration: usize) PropertyCount {
+    return switch (iteration % 10) {
+        0 => 0,
+        1 => 64,
+        2 => if (iteration % 50 == 2) maxPropertyCount else random.uintAtMost(PropertyCount, 16),
+        else => random.uintAtMost(PropertyCount, 16),
+    };
+}
+
+fn fillRandomSnapshot(snapshot: *CatalogSnapshot, random: std.Random, propertyCount: PropertyCount) void {
+    snapshot.propertyCount = propertyCount;
+    snapshot.nextRow = random.int(u64);
+    snapshot.keyToRowIndexReference = random.int(u64);
+    snapshot.nextKey = random.int(u64);
+    snapshot.primaryKeyIndexReference = random.int(u64);
+    snapshot.versionColumnReference = random.int(u64);
+    snapshot.liveColumnReference = random.int(u64);
+    for (snapshot.properties[0..snapshot.propertyCount]) |*property| property.* = .{
+        .column = random.int(u64),
+        .kind = random.enumValue(PropertyKind),
+        .element = random.enumValue(ElementKind),
+        .backlink = random.int(u64),
+        .target = random.int(u16),
+        .rule = random.enumValue(DeletionRule),
+        .valueIndex = random.int(u64),
+        .indexed = random.boolean(),
+    };
+}
+
+fn expectSnapshotReadsBack(snapshot: *const CatalogSnapshot, view: anytype) !void {
+    try testing.expectEqual(snapshot.propertyCount, view.propertyCount);
+    try testing.expectEqual(snapshot.nextRow, view.nextRow);
+    try testing.expectEqual(snapshot.keyToRowIndexReference, view.keyToRowIndexReference);
+    try testing.expectEqual(snapshot.nextKey, view.nextKey);
+    try testing.expectEqual(snapshot.primaryKeyIndexReference, view.primaryKeyIndexReference);
+    try testing.expectEqual(snapshot.versionColumnReference, view.versionColumnReference);
+    try testing.expectEqual(snapshot.liveColumnReference, view.liveColumnReference);
+    for (snapshot.properties[0..snapshot.propertyCount], 0..) |property, propertyIndex| {
+        try testing.expectEqual(property.column, view.propertyColumnReference(propertyIndex));
+        try testing.expectEqual(property.kind, view.kind(propertyIndex));
+        try testing.expectEqual(property.element, view.elementKind(propertyIndex));
+        try testing.expectEqual(property.backlink, view.backlinkReference(propertyIndex));
+        try testing.expectEqual(property.target, view.linkTarget(propertyIndex));
+        try testing.expectEqual(property.rule, view.deletionRule(propertyIndex));
+        try testing.expectEqual(property.valueIndex, view.valueIndexReference(propertyIndex));
+        try testing.expectEqual(property.indexed, view.indexed(propertyIndex));
+    }
+}
+
+test "loadCatalog accepts exactly maxPropertyCount properties and reads back every field" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("catalog max property count seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try objTmpPath(testing.allocator, &tmp, "catmax.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    var writeTransaction = try database.beginWrite();
+    defer writeTransaction.deinit();
+
+    var snapshot: CatalogSnapshot = undefined;
+    var iteration: usize = 0;
+    while (iteration < 3) : (iteration += 1) {
+        fillRandomSnapshot(&snapshot, random, maxPropertyCount);
+        const reference = try snapshot.write(&writeTransaction);
+        const view = try loadCatalog(&writeTransaction, reference);
+        try testing.expectEqual(@as(usize, 256), @as(usize, view.propertyCount));
+        try expectSnapshotReadsBack(&snapshot, view);
+    }
+}
+
+test "loadCatalog rejects exactly maxPropertyCount plus one properties as corrupt" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try objTmpPath(testing.allocator, &tmp, "catover.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    var writeTransaction = try database.beginWrite();
+    defer writeTransaction.deinit();
+
+    const reference = try create(&writeTransaction, 3);
+    const base: usize = @intCast(reference);
+    _ = try loadCatalog(&writeTransaction, reference);
+    std.mem.writeInt(u16, database.store.map[base..][0..2], 257, .little);
+    try testing.expectError(error.Corrupt, loadCatalog(&writeTransaction, reference));
+}
+
+test "catalog fuzz loadCatalog reads back every generated field" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("catalog round-trip fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try objTmpPath(testing.allocator, &tmp, "catfuzz_rt.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    var writeTransaction = try database.beginWrite();
+    defer writeTransaction.deinit();
+
+    var snapshot: CatalogSnapshot = undefined;
+    var iteration: usize = 0;
+    while (iteration < 150) : (iteration += 1) {
+        fillRandomSnapshot(&snapshot, random, fuzzPropertyCount(random, iteration));
+        const reference = try snapshot.write(&writeTransaction);
+        const view = try loadCatalog(&writeTransaction, reference);
+        try expectSnapshotReadsBack(&snapshot, view);
+    }
+}
+
+test "catalog fuzz rejects out-of-range enum bytes and oversized property counts" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("catalog corruption fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try objTmpPath(testing.allocator, &tmp, "catfuzz_bad.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    var writeTransaction = try database.beginWrite();
+    defer writeTransaction.deinit();
+
+    var iteration: usize = 0;
+    while (iteration < 150) : (iteration += 1) {
+        const propertyCount: PropertyCount = random.intRangeAtMost(PropertyCount, 1, 16);
+        const reference = try create(&writeTransaction, propertyCount);
+        const base: usize = @intCast(reference);
+        const map = database.store.map;
+        _ = try loadCatalog(&writeTransaction, reference);
+
+        const propertyIndex = random.uintLessThan(usize, propertyCount);
+        const arrayBase, const limit: u8 = switch (random.uintLessThan(u8, 3)) {
+            0 => .{ kindsOffset(propertyCount), @as(u8, std.enums.values(PropertyKind).len) },
+            1 => .{ elemsOffset(propertyCount), @as(u8, std.enums.values(ElementKind).len) },
+            else => .{ rulesOffset(propertyCount), @as(u8, std.enums.values(DeletionRule).len) },
+        };
+        const byteOffset = base + arrayBase + propertyIndex;
+        const saved = map[byteOffset];
+        map[byteOffset] = random.intRangeAtMost(u8, limit, std.math.maxInt(u8));
+        try testing.expectError(error.Corrupt, loadCatalog(&writeTransaction, reference));
+        map[byteOffset] = saved;
+        _ = try loadCatalog(&writeTransaction, reference);
+
+        const badCount = random.intRangeAtMost(u16, maxPropertyCount + 1, std.math.maxInt(u16));
+        std.mem.writeInt(u16, map[base..][0..2], badCount, .little);
+        try testing.expectError(error.Corrupt, loadCatalog(&writeTransaction, reference));
+        std.mem.writeInt(u16, map[base..][0..2], maxPropertyCount + 1, .little);
+        try testing.expectError(error.Corrupt, loadCatalog(&writeTransaction, reference));
+    }
+}
+
+test "catalog fuzz parses mutated integer fields to the mutated values" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("catalog integer mutation fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try objTmpPath(testing.allocator, &tmp, "catfuzz_int.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    var writeTransaction = try database.beginWrite();
+    defer writeTransaction.deinit();
+
+    var iteration: usize = 0;
+    while (iteration < 150) : (iteration += 1) {
+        const propertyCount: PropertyCount = random.intRangeAtMost(PropertyCount, 1, 16);
+        const reference = try create(&writeTransaction, propertyCount);
+        const base: usize = @intCast(reference);
+        const map = database.store.map;
+        const before = try loadCatalog(&writeTransaction, reference);
+
+        const propertyIndex = random.uintLessThan(usize, propertyCount);
+        const headerOffsets = [_]usize{ offNextRow, primaryKeyIndexReferenceOffset, versionColumnReferenceOffset, liveColumnReferenceOffset, keyToRowIndexReferenceOffset, offNextKey };
+        const headerOffset = headerOffsets[random.uintLessThan(usize, headerOffsets.len)];
+        const fieldValue = random.int(u64);
+        std.mem.writeInt(u64, map[base + headerOffset ..][0..8], fieldValue, .little);
+        const columnValue = random.int(u64);
+        std.mem.writeInt(u64, map[base + propertyColumnsOffset + propertyIndex * 8 ..][0..8], columnValue, .little);
+        const targetValue = random.int(u16);
+        std.mem.writeInt(u16, map[base + targetsOffset(propertyCount) + propertyIndex * 2 ..][0..2], targetValue, .little);
+        const flagByte = random.int(u8);
+        map[base + indexedFlagsOffset(propertyCount) + propertyIndex] = flagByte;
+
+        const after = try loadCatalog(&writeTransaction, reference);
+        try testing.expectEqual(before.propertyCount, after.propertyCount);
+        const loaded = [_]u64{ after.nextRow, after.primaryKeyIndexReference, after.versionColumnReference, after.liveColumnReference, after.keyToRowIndexReference, after.nextKey };
+        for (headerOffsets, loaded) |offset, value| {
+            const expected: u64 = if (offset == headerOffset) fieldValue else std.mem.readInt(u64, before.bytes[offset..][0..8], .little);
+            try testing.expectEqual(expected, value);
+        }
+        try testing.expectEqual(columnValue, after.propertyColumnReference(propertyIndex));
+        try testing.expectEqual(targetValue, after.linkTarget(propertyIndex));
+        try testing.expectEqual(flagByte != 0, after.indexed(propertyIndex));
+        _ = after.kind(propertyIndex);
+        _ = after.elementKind(propertyIndex);
+        _ = after.deletionRule(propertyIndex);
+    }
+}
+
+test "catalog fuzz reports a clean error when the node is shorter than the catalog" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("catalog truncation fuzz seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    const Truncated = struct {
+        bytes: []const u8,
+        fn dereference(self: @This(), reference: Reference, length: usize) error{BadReference}![]const u8 {
+            _ = reference;
+            if (length > self.bytes.len) return error.BadReference;
+            return self.bytes[0..length];
+        }
+    };
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try objTmpPath(testing.allocator, &tmp, "catfuzz_trunc.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    var writeTransaction = try database.beginWrite();
+    defer writeTransaction.deinit();
+
+    var iteration: usize = 0;
+    while (iteration < 100) : (iteration += 1) {
+        const propertyCount: PropertyCount = random.intRangeAtMost(PropertyCount, 1, 16);
+        const reference = try create(&writeTransaction, propertyCount);
+        const base: usize = @intCast(reference);
+        const full = database.store.map[base..][0..catalogSize(propertyCount)];
+        _ = try loadCatalog(Truncated{ .bytes = full }, reference);
+        const keep = random.uintLessThan(usize, full.len);
+        try testing.expectError(error.BadReference, loadCatalog(Truncated{ .bytes = full[0..keep] }, reference));
+    }
+}

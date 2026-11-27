@@ -341,7 +341,7 @@ test "update and delete churn: the full operator matrix against an updated RAM o
     defer database.deinit();
     var writeTransaction = try database.beginWrite();
     const fixture = try seedIndexedStringDirectory(&writeTransaction);
-    writeTransaction.setRoot(fixture.directoryReference);
+    writeTransaction.setRoot(fixture.directoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
 
     var mutableValues = fixture.values;
@@ -379,7 +379,7 @@ test "update and delete churn: the full operator matrix against an updated RAM o
         const version4 = (try typeRouting.get(&updateTransaction, directoryReference, directoryTypeId, primaryKeyRow4, &propertyBuffer)).?;
         directoryReference = (try typeRouting.delete(&updateTransaction, directoryReference, directoryTypeId, primaryKeyRow4, version4)).ok;
     }
-    updateTransaction.setRoot(directoryReference);
+    updateTransaction.setRoot(directoryReference, .typeDirectory);
     _ = try updateTransaction.commit();
 
     // Live set: every original index except 3 and 4.
@@ -440,7 +440,7 @@ test "R2: an insert and update in one transaction leaves no stale index key" {
     // "alpha" and "gamma" are the same length, which is what makes the freed
     // extent exactly reusable and would trigger the bug section 4.4 fixes.
     catalogReference = (try objects.updateTyped(&writeTransaction, catalogReference, 1, &.{ .{ .int = 1 }, .{ .bytes = "gamma" } }, insertedVersion)).ok.catalogReference;
-    writeTransaction.setRoot(catalogReference);
+    writeTransaction.setRoot(catalogReference, .catalog);
     _ = try writeTransaction.commit();
 
     var readTransaction = try database.beginWrite();
@@ -488,7 +488,7 @@ test "no-op guard: a same-bytes blob update on a multi-blob-property type leaves
     const insertedVersion = (try objects.getTyped(&writeTransaction, catalogReference, 1, &propertyBuffer)).?;
     // The no-op: identical bytes on both blob properties, same length.
     catalogReference = (try objects.updateTyped(&writeTransaction, catalogReference, 1, &.{ .{ .int = 1 }, .{ .bytes = "alpha" }, .{ .bytes = "static" } }, insertedVersion)).ok.catalogReference;
-    writeTransaction.setRoot(catalogReference);
+    writeTransaction.setRoot(catalogReference, .catalog);
     _ = try writeTransaction.commit();
 
     var readTransaction = try database.beginWrite();
@@ -523,7 +523,7 @@ fn arenaGrowthOverUpdateLoop(path: []const u8, updateCount: usize, sizeAt: fn (u
         var directoryReference = try typeDirectory.createWithDefinitions(&writeTransaction, &.{&definitions});
         const inserted = try typeRouting.insert(&writeTransaction, directoryReference, directoryTypeId, &.{ .{ .int = 1 }, .{ .bytes = initialBytes } });
         directoryReference = inserted.directoryReference;
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -537,7 +537,7 @@ fn arenaGrowthOverUpdateLoop(path: []const u8, updateCount: usize, sizeAt: fn (u
         var propertyBuffer: [2]catalog.Value = undefined;
         const version = (try typeRouting.get(&writeTransaction, database.activeRoot, directoryTypeId, 1, &propertyBuffer)).?;
         const directoryReference = (try typeRouting.update(&writeTransaction, database.activeRoot, directoryTypeId, 1, &.{ .{ .int = 1 }, .{ .bytes = buffer } }, version)).ok.directoryReference;
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
     return database.arena.top - topAfterSetup;
@@ -735,7 +735,7 @@ test "R11: fuzz, indexed and scan and oracle agree over random byte values" {
 
         // Third invariant: verifyIntegrity passes after each seed's inserts.
         // Commit and set root so it audits this seed's freshly built type.
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
         writeTransaction.deinit();
         try verification.verifyIntegrity(&database);

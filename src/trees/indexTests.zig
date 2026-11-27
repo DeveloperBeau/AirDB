@@ -161,7 +161,7 @@ test "a committed index version stays intact for a pinned reader while a later c
         var root = try create(&writeTransaction);
         var position: u64 = 0;
         while (position < 2000) : (position += 1) root = try insert(&writeTransaction, root, position, position * 10);
-        writeTransaction.setRoot(root);
+        writeTransaction.setRoot(root, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -176,7 +176,7 @@ test "a committed index version stays intact for a pinned reader while a later c
         var root = writeTransaction.newRoot; // start from the latest committed root (refreshed in beginWrite)
         root = try insert(&writeTransaction, root, 1234, 999999);
         root = try remove(&writeTransaction, root, 500);
-        writeTransaction.setRoot(root);
+        writeTransaction.setRoot(root, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -928,7 +928,7 @@ test "ordered index persists across reopen and matches a reference map under chu
             root = try remove(&writeTransaction, root, key);
             _ = referenceMap.remove(key);
         }
-        writeTransaction.setRoot(root);
+        writeTransaction.setRoot(root, .blob);
         _ = try writeTransaction.commit();
     }
     {

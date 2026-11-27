@@ -2,7 +2,9 @@
 //!
 //! Checks the header, commit slots, root reference, and free list for structural
 //! sanity, then audits every value index and backlink index against the live
-//! base rows in both directions. Read-only; nothing inner imports this file.
+//! base rows in both directions. The root's kind comes from the commit slot,
+//! so the audit knows whether to walk a catalog, a type directory or nothing.
+//! Read-only; nothing inner imports this file.
 
 const std = @import("std");
 const testing = std.testing;
@@ -42,6 +44,10 @@ pub const VerifyError = error{
     // A backlink entry names a source that is dead/absent or whose link column
     // does not actually point at the target (backward direction).
     BacklinkStaleEntry,
+    // The commit slot tags the root as a catalog or a type directory, but
+    // the root does not parse as one: a type count over 256, or a type
+    // directory, catalog reference or catalog that cannot be read.
+    RootUnreadable,
 };
 
 /// Audit the database's structural invariants and every value/backlink index.
@@ -77,44 +83,54 @@ pub fn verifyIntegrity(database: *Database) VerifyError!void {
     try auditValueIndexes(database);
 }
 
-// Audit every value index against the live base rows. For each indexed
-// property of each type, both directions of the invariant are checked:
-//   * forward  -- every live row's value is present in the value index;
-//   * backward -- every value-index entry resolves to a live row whose
-//                 property value equals the indexed value.
-// Any divergence is surfaced as a VerifyError rather than later showing up
-// as a wrong query result.
-//
-// The root may legitimately not be a type directory (low-level callers
-// commit raw blobs). A valid directory holds at most 256 types, so an
-// implausible type count -- or any catalog that fails to load -- means the
-// root is not a typed directory and there is nothing to audit.
+// Audit every value index and backlink index reachable from the root. The
+// commit slot records what the root is, so the audit never guesses.
+//   * None and blob roots hold no typed data, so there is nothing to audit.
+//   * A catalog root is one type, audited on its own.
+//   * A type directory root is audited type by type.
+// A tagged root that fails to parse is damage, reported as RootUnreadable,
+// never a quiet pass.
 fn auditValueIndexes(database: *Database) VerifyError!void {
-    if (database.activeRoot == 0) return;
     var readTransaction = ReadTransaction{ .database = database, .rootReference = database.activeRoot, .version = database.activeVersion };
-    const typeCount = typeDirectory.typeCount(&readTransaction, database.activeRoot) catch return;
-    if (typeCount > 256) return;
-    var typeId: u16 = 0;
-    while (typeId < typeCount) : (typeId += 1) {
-        const catalogReference = typeDirectory.catalogReference(&readTransaction, database.activeRoot, typeId) catch return;
-        const catalogView = catalog.loadCatalog(&readTransaction, catalogReference) catch return;
-        var propertyIndex: usize = 0;
-        while (propertyIndex < catalogView.propertyCount) : (propertyIndex += 1) {
-            const kind = catalogView.kind(propertyIndex);
-            if (kind == .link or kind == .linkSet) {
-                try auditBacklinksForward(&readTransaction, catalogView, propertyIndex, kind);
-                try auditBacklinksBackward(&readTransaction, catalogView, propertyIndex, kind);
+    switch (database.activeRootKind) {
+        .none, .blob => return,
+        .catalog => try auditCatalog(&readTransaction, database.activeRoot),
+        .typeDirectory => {
+            const typeCount = typeDirectory.typeCount(&readTransaction, database.activeRoot) catch return error.RootUnreadable;
+            if (typeCount > maxTypeCount) return error.RootUnreadable;
+            var typeId: u16 = 0;
+            while (typeId < typeCount) : (typeId += 1) {
+                const catalogReference = typeDirectory.catalogReference(&readTransaction, database.activeRoot, typeId) catch return error.RootUnreadable;
+                try auditCatalog(&readTransaction, catalogReference);
             }
-            if (!catalogView.indexed(propertyIndex)) continue;
-            const valueIndexReference = catalogView.valueIndexReference(propertyIndex);
-            const propertyColumn = catalogView.propertyColumnReference(propertyIndex);
-            if (kind == .blob) {
-                try auditBlobValueIndexForward(&readTransaction, catalogView.keyToRowIndexReference, valueIndexReference, propertyColumn, catalogView.liveColumnReference);
-                try auditBlobValueIndexBackward(&readTransaction, valueIndexReference, catalogView.keyToRowIndexReference, propertyColumn, catalogView.liveColumnReference);
-            } else {
-                try auditValueIndexForward(&readTransaction, catalogView.keyToRowIndexReference, valueIndexReference, propertyColumn, catalogView.liveColumnReference);
-                try auditValueIndexBackward(&readTransaction, valueIndexReference, catalogView.keyToRowIndexReference, propertyColumn, catalogView.liveColumnReference);
-            }
+        },
+    }
+}
+
+// The type directory writers cap a directory at 256 types (createTypes and
+// addTypeDefinitionsEmbedded assert it), so a larger count can only come from damage.
+const maxTypeCount: u16 = 256;
+
+// Audit one type's catalog: both directions of every backlink index and
+// every value index. A catalog that does not load is RootUnreadable.
+fn auditCatalog(readTransaction: *ReadTransaction, catalogReference: Reference) VerifyError!void {
+    const catalogView = catalog.loadCatalog(readTransaction, catalogReference) catch return error.RootUnreadable;
+    var propertyIndex: usize = 0;
+    while (propertyIndex < catalogView.propertyCount) : (propertyIndex += 1) {
+        const kind = catalogView.kind(propertyIndex);
+        if (kind == .link or kind == .linkSet) {
+            try auditBacklinksForward(readTransaction, catalogView, propertyIndex, kind);
+            try auditBacklinksBackward(readTransaction, catalogView, propertyIndex, kind);
+        }
+        if (!catalogView.indexed(propertyIndex)) continue;
+        const valueIndexReference = catalogView.valueIndexReference(propertyIndex);
+        const propertyColumn = catalogView.propertyColumnReference(propertyIndex);
+        if (kind == .blob) {
+            try auditBlobValueIndexForward(readTransaction, catalogView.keyToRowIndexReference, valueIndexReference, propertyColumn, catalogView.liveColumnReference);
+            try auditBlobValueIndexBackward(readTransaction, valueIndexReference, catalogView.keyToRowIndexReference, propertyColumn, catalogView.liveColumnReference);
+        } else {
+            try auditValueIndexForward(readTransaction, catalogView.keyToRowIndexReference, valueIndexReference, propertyColumn, catalogView.liveColumnReference);
+            try auditValueIndexBackward(readTransaction, valueIndexReference, catalogView.keyToRowIndexReference, propertyColumn, catalogView.liveColumnReference);
         }
     }
 }
@@ -122,7 +138,9 @@ fn auditValueIndexes(database: *Database) VerifyError!void {
 // Forward direction of the value-index invariant: walk the live rows (the
 // key-to-row index maps objectKey->row for live rows only) and assert each row's indexed
 // value carries that objectKey in the value index's inner set. A live row that the
-// index does not cover is error.ValueIndexMissingEntry. Any structural failure
+// index does not cover is error.ValueIndexMissingEntry. A key-to-row entry
+// that names a dead row is damage too: rows.delete tombstones the row and
+// removes its key in one step, so no writer leaves one behind. Any structural failure
 // reading the index/columns of an established typed catalog is itself a
 // divergence and reported the same way.
 fn auditValueIndexForward(readTransaction: *ReadTransaction, keyToRowIndexReference: Reference, valueIndexReference: Reference, propertyColumn: Reference, liveColumn: Reference) VerifyError!void {
@@ -132,7 +150,7 @@ fn auditValueIndexForward(readTransaction: *ReadTransaction, keyToRowIndexRefere
         propertyColumn: Reference,
         liveColumn: Reference,
         fn onEntry(self: @This(), objectKey: u64, row: u64) anyerror!void {
-            if ((try Column.get(self.readTransaction, self.liveColumn, row)) == 0) return; // defensive: skip dead
+            if ((try Column.get(self.readTransaction, self.liveColumn, row)) == 0) return error.ValueIndexMissingEntry; // key-to-row holds live rows only
             const value = try Column.get(self.readTransaction, self.propertyColumn, row);
             const inner = (try Index.get(self.readTransaction, self.valueIndexReference, value)) orelse return error.ValueIndexMissingEntry;
             if ((try Index.get(self.readTransaction, inner, objectKey)) == null) return error.ValueIndexMissingEntry;
@@ -189,7 +207,7 @@ fn auditBlobValueIndexForward(readTransaction: *ReadTransaction, keyToRowIndexRe
         propertyColumn: Reference,
         liveColumn: Reference,
         fn onEntry(self: @This(), objectKey: u64, row: u64) anyerror!void {
-            if ((try Column.get(self.readTransaction, self.liveColumn, row)) == 0) return; // defensive: skip dead
+            if ((try Column.get(self.readTransaction, self.liveColumn, row)) == 0) return error.ValueIndexMissingEntry; // key-to-row holds live rows only
             const raw = try Column.get(self.readTransaction, self.propertyColumn, row);
             var keyBuffer: [blobIndexKey.maxLength]u8 = undefined;
             const key = try blobIndexKey.read(self.readTransaction, raw, &keyBuffer);
@@ -275,7 +293,7 @@ fn auditBacklinksForward(readTransaction: *ReadTransaction, catalogView: catalog
             if ((try Index.get(self.readTransaction, inner, sourceObjectKey)) == null) return error.BacklinkMissingEntry;
         }
         fn onEntry(self: @This(), objectKey: u64, row: u64) anyerror!void {
-            if ((try Column.get(self.readTransaction, self.liveColumn, row)) == 0) return; // defensive: skip dead
+            if ((try Column.get(self.readTransaction, self.liveColumn, row)) == 0) return error.BacklinkMissingEntry; // key-to-row holds live rows only
             const raw = try Column.get(self.readTransaction, self.propertyColumn, row);
             if (self.kind == .link) {
                 if (raw == 0) return; // null link
@@ -373,10 +391,14 @@ test "verifyIntegrity detects both slots corrupt" {
     var writeTransaction = try database.beginWrite();
     const allocation = try writeTransaction.alloc(8);
     @memcpy(allocation.bytes, "INTEGER_");
-    writeTransaction.setRoot(allocation.reference);
+    writeTransaction.setRoot(allocation.reference, .blob);
     _ = try writeTransaction.commit();
     // Corrupt the checksum bytes of BOTH slot regions so neither decodes. Header stays valid.
     database.store.map[slotAOff + 4] ^= 0xFF;
     database.store.map[slotBOff + 4] ^= 0xFF;
     try testing.expectError(error.SlotCorrupt, verifyIntegrity(&database));
+}
+
+test {
+    _ = @import("verificationTests.zig");
 }

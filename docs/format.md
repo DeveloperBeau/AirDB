@@ -1,9 +1,8 @@
 # On-disk format
 
-Pre-1.0: this layout changes without migration support. All integers are
-little-endian; the store refuses to open big-endian-tagged files. Current
-magic: `airdb_0003`; a file written with an older magic refuses to open with
-`error.BadMagic` rather than being read or migrated.
+Pre-1.0: the layout is not stable between commits. All integers are
+little-endian; the store refuses to open big-endian-tagged files. The magic is
+`airdb_0001`; a file without it fails to open with `error.BadMagic`.
 
 ## File layout
 
@@ -17,14 +16,45 @@ mapped individually and never moved. A `Reference` is an absolute byte offset,
 | Range | Contents |
 |---|---|
 | `[0, 32)` | file header: magic u64, page_size u32, endianness u8, active_slot u8, reserved, logical_size u64, CRC32 of `[0,28)` |
-| `[64, 100)` | commit slot A |
-| `[128, 164)` | commit slot B |
+| `[64, 104)` | commit slot A |
+| `[128, 168)` | commit slot B |
 | `[192, 200)` | retention window u64 (shared reclaim floor; 0 = none, maxInt = retain everything) |
 | `[1016, 1024)` | version-ring head counter u64 (monotonic; live index = head % 128) |
 | `[1024, 3072)` | version ring: 128 × (version u64, root_reference u64) |
 
-A commit slot is `version u64, root_reference u64, free_list_reference u64,
-logical_size u64, CRC32 of the preceding 32 bytes` (36 bytes).
+A commit slot is 40 bytes:
+
+| Range | Contents |
+|---|---|
+| `[0, 8)` | version u64 |
+| `[8, 16)` | root_reference u64 |
+| `[16, 24)` | free_list_reference u64 |
+| `[24, 32)` | logical_size u64 |
+| `[32]` | root_kind u8 |
+| `[33, 36)` | reserved, must be zero |
+| `[36, 40)` | CRC32 of `[0, 36)` |
+
+`root_kind` says what the root reference points at:
+
+| Value | Kind | Root reference | Audited by verifyIntegrity |
+|---|---|---|---|
+| 0 | none | must be 0 | nothing to audit |
+| 1 | blob | nonzero | no typed audit (raw bytes) |
+| 2 | catalog | nonzero | that one catalog |
+| 3 | typeDirectory | nonzero | every type in the directory (at most 256) |
+
+A slot is corrupt when its CRC does not match, its kind byte is not in the
+table, a reserved byte is nonzero, or its kind disagrees with its root (kind
+none with a nonzero root, or a real kind with a null root). Recovery treats a
+corrupt slot the same way whatever the reason.
+
+Why the kind is stored: nothing in a root node says which shape it has. A
+type directory, a bare catalog (the C ABI commits one) and raw bytes are all
+legal roots. Without a recorded kind the audit would have to guess, and a bare catalog read
+as a type directory would pass with no audit at all. The kind is declared by the writer
+through `WriteTransaction.setRoot(reference, kind)` and stored under the slot
+CRC. The version ring is unchanged. It feeds only point-in-time reads, and
+those readers already know what shape they expect.
 
 ### Free-list node
 

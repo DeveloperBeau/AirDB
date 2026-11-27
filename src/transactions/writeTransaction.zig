@@ -9,6 +9,7 @@ const Io = std.Io;
 const Allocation = @import("../storage/arena.zig").Allocation;
 const Reference = @import("../storage/reference.zig").Reference;
 const Slot = @import("../storage/slots.zig").Slot;
+const RootKind = @import("../storage/rootKind.zig").RootKind;
 const FreeExtent = @import("../storage/freeList.zig").FreeExtent;
 const FreeList = @import("../storage/freeList.zig").FreeList;
 const Database = @import("../database.zig").Database;
@@ -26,6 +27,8 @@ const slotBOff: usize = 128;
 pub const WriteTransaction = struct {
     database: *Database,
     newRoot: Reference,
+    /// What newRoot points at. Starts as the committed kind and changes only through setRoot.
+    newRootKind: RootKind,
     newVersion: u64,
     inFlightFrees: std.ArrayList(FreeExtent),
     workFreelist: FreeList,
@@ -99,9 +102,12 @@ pub const WriteTransaction = struct {
         return self.database.bumpGrowing(size);
     }
 
-    /// Record `reference` as the root commit() will publish.
-    pub fn setRoot(self: *WriteTransaction, reference: Reference) void {
+    /// Record `reference` as the root commit() will publish, with the kind of
+    /// structure it points at, so verifyIntegrity never has to guess the shape.
+    /// A null root takes kind none and a real root takes a real kind, or commit fails.
+    pub fn setRoot(self: *WriteTransaction, reference: Reference, kind: RootKind) void {
         self.newRoot = reference;
+        self.newRootKind = kind;
     }
 
     /// Mark the node at `reference` reclaimable. A node this transaction allocated
@@ -175,7 +181,7 @@ pub const WriteTransaction = struct {
     ///      The old active slot on disk is still valid, so crash recovery
     ///      will see the old version.
     ///   6. Only after both flushes succeed: install new free list, update
-    ///      activeVersion / activeRoot.
+    ///      activeVersion / activeRoot / activeRootKind.
     ///
     /// newFl ownership: errdefer newFl.deinit() is registered immediately after
     /// FreeList.init so all error returns (try-errors AND the two explicit
@@ -190,6 +196,9 @@ pub const WriteTransaction = struct {
         // released, and `done` set so a caller's deferred deinit is a no-op.
         errdefer self.conclude();
         const database = self.database;
+        // Refuse a root whose declared kind cannot be true before anything is
+        // written: a slot carrying it would fail to decode at the next open.
+        if ((self.newRootKind == .none) != (self.newRoot == 0)) return error.RootKindMismatch;
         const prevActiveSlot = database.store.header.activeSlot;
         const prevLogicalSize = database.store.header.logicalSize;
 
@@ -215,6 +224,7 @@ pub const WriteTransaction = struct {
         // Step 6: publish the new version in memory only after both flushes succeed.
         database.activeVersion = self.newVersion;
         database.activeRoot = self.newRoot;
+        database.activeRootKind = self.newRootKind;
         database.coordination.setLatestVersion(self.newVersion);
         // Install the new free list. errdefer for newFl will NOT fire here
         // because we are on the success return path (return self.newVersion below).
@@ -343,6 +353,7 @@ pub const WriteTransaction = struct {
         const newSlot = Slot{
             .version = self.newVersion,
             .rootReference = self.newRoot,
+            .rootKind = self.newRootKind,
             .freeListReference = freeListHeadReference,
             .logicalSize = @intCast(database.arena.top),
         };

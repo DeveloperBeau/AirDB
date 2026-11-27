@@ -125,6 +125,7 @@ pub fn refreshToLatest(database: *Database) !void {
     // All decoding succeeded: install everything together.
     database.activeVersion = published.version;
     database.activeRoot = published.rootReference;
+    database.activeRootKind = published.rootKind;
     database.arena.top = @intCast(published.logicalSize);
     database.freeList.deinit();
     database.freeList = newFl;
@@ -251,13 +252,13 @@ test "refresh does not advance to a durable-but-unpublished (aborted) slot" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "PUBLISH_");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit(); // publishes; coordination.latestVersion advances to this version
     }
     const publishedVersion = database.activeVersion;
     // Forge a VALID slot with a much higher version into the inactive slot bytes,
     // WITHOUT advancing coordination.latestVersion (simulates an aborted-but-durable commit).
-    const forged = Slot{ .version = publishedVersion + 50, .rootReference = 0, .freeListReference = 0, .logicalSize = defaultPageSize };
+    const forged = Slot{ .version = publishedVersion + 50, .rootReference = 0, .rootKind = .none, .freeListReference = 0, .logicalSize = defaultPageSize };
     var buffer: [Slot.size]u8 = undefined;
     forged.encode(&buffer);
     // Write it into whichever slot is currently inactive. The active slot is header.activeSlot.
@@ -286,7 +287,7 @@ test "recovery follows header activeSlot pointer, not max version" {
         var database = try Database.create(testing.allocator, path);
         defer database.deinit();
         // Inject a plausible-but-aborted slot into slot B without touching the header.
-        const aborted = Slot{ .version = 50, .rootReference = 0, .freeListReference = 0, .logicalSize = defaultPageSize };
+        const aborted = Slot{ .version = 50, .rootReference = 0, .rootKind = .none, .freeListReference = 0, .logicalSize = defaultPageSize };
         aborted.encode(database.store.map[slotBOff..][0..Slot.size]);
         try database.store.syncer.flush(database.store.file);
         // header.activeSlot remains 0 (slot A, version 1).
@@ -312,7 +313,7 @@ test "falling back past a corrupt primary slot is surfaced in metrics" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "VERSION2");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
         try testing.expect(!database.metrics().recoveredFallback); // clean session
         // Corrupt the PRIMARY (active) slot's checksum region on disk.

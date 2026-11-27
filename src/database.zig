@@ -16,6 +16,7 @@ const Arena = @import("storage/arena.zig").Arena;
 const Allocation = @import("storage/arena.zig").Allocation;
 const Reference = @import("storage/reference.zig").Reference;
 const Slot = @import("storage/slots.zig").Slot;
+const RootKind = @import("storage/rootKind.zig").RootKind;
 const FreeList = @import("storage/freeList.zig").FreeList;
 const Coordination = @import("transactions/coordination.zig").Coordination;
 const sentinelMax = @import("transactions/coordination.zig").sentinelMax;
@@ -29,7 +30,7 @@ pub const slotBOff: usize = 128;
 
 // Version->root ring log, in the reserved header page (page 0, [0, defaultPageSize)).
 // The arena's data starts at defaultPageSize, so the header page has free room past
-// the FileStore header ([0,32)) and the two commit slots (A: [64,100), B: [128,164)).
+// the FileStore header ([0,32)) and the two commit slots (A: [64,104), B: [128,168)).
 // End of ring = ringOff + ringCapacity*16 = 1024 + 128*16 = 3072 < 4096. No overlap.
 
 /// Byte offset of the ring head: a u64 LE monotonically increasing count of
@@ -49,11 +50,19 @@ pub const ringCapacity: u32 = 128;
 /// from reuse until it is older than `activeVersion - retain`. A per-instance
 /// in-memory setting would let a default-configured writer in another process
 /// reuse space under a point-in-time reader that relies on the window. u64 LE
-/// at [192, 200); 8-aligned, clear of slot B ([128, 164)) and the ring head
+/// at [192, 200); 8-aligned, clear of slot B ([128, 168)) and the ring head
 /// (1016). Zero on a fresh (zero-filled) file, matching the old default.
 /// maxInt means "retain everything". Read/written atomically through the
 /// shared mapping.
 pub const retainOff: usize = 192;
+
+// The FileStore header ends at 32, slot A ends at 104, slot B at 168 and the
+// retention window starts at 192. Fail the build if a slot ever grows into its neighbor.
+comptime {
+    std.debug.assert(32 <= slotAOff);
+    std.debug.assert(slotAOff + Slot.size <= slotBOff);
+    std.debug.assert(slotBOff + Slot.size <= retainOff);
+}
 
 // ---------------------------------------------------------------------------
 // Database
@@ -91,6 +100,9 @@ pub const Database = struct {
     arena: Arena,
     activeVersion: u64,
     activeRoot: Reference,
+    /// What activeRoot points at, read from the same commit slot. Always set
+    /// together with activeRoot so the pair never disagrees.
+    activeRootKind: RootKind,
     pins: std.AutoHashMap(u64, u32),
     /// Currently-committed free list. Owns its memory; deinit'd in Database.deinit.
     freeList: FreeList,
@@ -157,6 +169,7 @@ pub const Database = struct {
         const initial = Slot{
             .version = 1,
             .rootReference = 0,
+            .rootKind = .none,
             .freeListReference = 0,
             .logicalSize = defaultPageSize,
         };
@@ -191,6 +204,7 @@ pub const Database = struct {
             .arena = Arena.init(store.sectionsView(), defaultPageSize),
             .activeVersion = 1,
             .activeRoot = 0,
+            .activeRootKind = .none,
             .pins = std.AutoHashMap(u64, u32).init(allocator),
             .freeList = FreeList.init(allocator),
             .freeListNodeReference = 0,
@@ -226,6 +240,7 @@ pub const Database = struct {
             .arena = Arena.init(storeSections, defaultPageSize),
             .activeVersion = 0,
             .activeRoot = 0,
+            .activeRootKind = .none,
             .pins = std.AutoHashMap(u64, u32).init(allocator),
             .freeList = FreeList.init(allocator),
             .freeListNodeReference = 0,
@@ -239,6 +254,7 @@ pub const Database = struct {
         const active = try versioning.selectActiveSlot(&database);
         database.activeVersion = active.version;
         database.activeRoot = active.rootReference;
+        database.activeRootKind = active.rootKind;
         database.arena.top = @intCast(active.logicalSize);
         if (active.freeListReference != 0) try freeListRecovery.loadFreeList(&database, active.freeListReference);
 
@@ -446,6 +462,7 @@ pub const Database = struct {
         return WriteTransaction{
             .database = self,
             .newRoot = self.activeRoot,
+            .newRootKind = self.activeRootKind,
             .newVersion = self.activeVersion + 1,
             .inFlightFrees = .empty,
             .workFreelist = workFreelist,
