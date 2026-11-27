@@ -2,7 +2,7 @@
 
 Pre-1.0: the layout is not stable between commits. All integers are
 little-endian; the store refuses to open big-endian-tagged files. The magic is
-`airdb_0004`; a file without it fails to open with `error.BadMagic`.
+`airdb_0001`; a file without it fails to open with `error.BadMagic`.
 
 ## File layout
 

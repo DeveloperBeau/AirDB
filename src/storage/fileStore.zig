@@ -26,9 +26,8 @@ const FileSyncer = @import("syncer.zig").FileSyncer;
 // Public constants
 // ---------------------------------------------------------------------------
 
-/// File magic: "airdb" plus a format number. `open` fails with
-/// `error.BadMagic` on any other value.
-pub const airdbMagic: u64 = 0x6169726462_0004;
+/// File magic: "airdb_0001". `open` fails with `error.BadMagic` on any other value.
+pub const airdbMagic: u64 = 0x6169726462_0001;
 /// Size of the header page; the header and both commit slots live in it.
 pub const defaultPageSize: u32 = 4096;
 
@@ -398,7 +397,7 @@ test "create writes a header that reopen reads back" {
         try testing.expectEqual(airdbMagic, store.header.magic);
         // A hand literal, not airdbMagic: comparing against the same constant
         // on both sides cannot fail however the implementation behaves.
-        try testing.expectEqual(@as(u64, 0x6169726462_0004), store.header.magic);
+        try testing.expectEqual(@as(u64, 0x6169726462_0001), store.header.magic);
     }
 }
 

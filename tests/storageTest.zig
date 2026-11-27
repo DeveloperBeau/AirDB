@@ -138,8 +138,9 @@ test "opening a file with bad magic fails cleanly" {
 }
 
 test "neighbouring magic values are refused with error.BadMagic by Database.open" {
+    // airdb_0000 and airdb_0002 are simply unknown magics; neither is a supported format.
     // Hand literals, not airdbMagic: the expected values must not move with the constant.
-    const current: u64 = 0x6169726462_0004;
+    const current: u64 = 0x6169726462_0001;
     const neighbours = [_]u64{ current - 1, current + 1 };
     const io = std.Io.Threaded.global_single_threaded.io();
     for (neighbours) |neighbour| {
