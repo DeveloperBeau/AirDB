@@ -60,7 +60,7 @@ fn commitFixture(database: *Database) !void {
     }
     const note = try typeRouting.insert(&writeTransaction, directoryReference, noteType, &.{ .{ .int = 1 }, .{ .link = itemKeys[2] } });
     directoryReference = note.directoryReference;
-    writeTransaction.setRoot(directoryReference);
+    writeTransaction.setRoot(directoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
 }
 
