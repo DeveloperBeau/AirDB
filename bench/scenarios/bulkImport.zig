@@ -65,7 +65,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
     {
         var writeTransaction = try databaseA.beginWrite();
         const catalogReference = try catalog.create(&writeTransaction, 2);
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
 
@@ -75,7 +75,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
     {
         var writeTransaction = try databaseA.beginWrite();
         const newCatalog = try bulk.bulkImport(&writeTransaction, writeTransaction.newRoot, rows, .{});
-        writeTransaction.setRoot(newCatalog);
+        writeTransaction.setRoot(newCatalog, .catalog);
         _ = try writeTransaction.commit();
     }
     const bulkNs: u64 = @intCast(nowNs(io) - bulkStart);
@@ -92,7 +92,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
     var catalogReference: Reference = blk: {
         var writeTransaction = try databaseB.beginWrite();
         const catalogReference = try catalog.create(&writeTransaction, 2);
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
         break :blk catalogReference;
     };
@@ -111,7 +111,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
             const result = try rawRows.insert(&writeTransaction, catalogReference, &.{ primaryKey, primaryKey });
             catalogReference = result.catalogReference;
         }
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
         inserted += thisBatch;
     }

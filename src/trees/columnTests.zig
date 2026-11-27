@@ -203,7 +203,7 @@ test "a column persisted as the root survives commit and reopen" {
         var root = try create(&writeTransaction);
         var index: u64 = 0;
         while (index < 2000) : (index += 1) root = try append(&writeTransaction, root, index * 3);
-        writeTransaction.setRoot(root);
+        writeTransaction.setRoot(root, .blob);
         _ = try writeTransaction.commit();
     }
     {
@@ -234,7 +234,7 @@ test "two million element column builds, persists, and reads back" {
         {
             var writeTransaction = try database.beginWrite();
             root = try create(&writeTransaction);
-            writeTransaction.setRoot(root);
+            writeTransaction.setRoot(root, .blob);
             _ = try writeTransaction.commit();
         }
         // Build in batches; value at index i is i.
@@ -243,7 +243,7 @@ test "two million element column builds, persists, and reads back" {
             var writeTransaction = try database.beginWrite();
             const end = @min(version + batch, N);
             while (version < end) : (version += 1) root = try append(&writeTransaction, root, version);
-            writeTransaction.setRoot(root);
+            writeTransaction.setRoot(root, .blob);
             _ = try writeTransaction.commit();
         }
     }
@@ -279,7 +279,7 @@ test "two million element column built in a single transaction" {
         var root = try create(&writeTransaction);
         var version: u64 = 0;
         while (version < N) : (version += 1) root = try append(&writeTransaction, root, version);
-        writeTransaction.setRoot(root);
+        writeTransaction.setRoot(root, .blob);
         _ = try writeTransaction.commit();
     }
     {

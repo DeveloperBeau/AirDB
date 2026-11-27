@@ -226,7 +226,7 @@ test "a committed database with a poisoned abandoned slot passes verifyIntegrity
     const outcome = try RelocationFixtureTests.relocateAndPoison(&transaction, catalogReference, second.objectKey, deadRow);
     try testing.expectEqual(@as(?u64, 1), outcome.abandonedRow);
     directoryReference = try typeDirectory.setCatalogReference(&transaction, directoryReference, 0, outcome.catalogReference);
-    transaction.setRoot(directoryReference);
+    transaction.setRoot(directoryReference, .typeDirectory);
     _ = try transaction.commit();
 
     try verification.verifyIntegrity(&database);

@@ -46,7 +46,7 @@ fn seedBase(database: *airdb.Database, baseRows: []const []const u64) !void {
     var writeTransaction = try database.beginWrite();
     const catalogReference = try catalog.create(&writeTransaction, 2);
     const seeded = try bulk.bulkImport(&writeTransaction, catalogReference, baseRows, .{ .presorted = true });
-    writeTransaction.setRoot(seeded);
+    writeTransaction.setRoot(seeded, .catalog);
     _ = try writeTransaction.commit();
 }
 
@@ -104,7 +104,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
     {
         var writeTransaction = try databaseA.beginWrite();
         const newCatalog = try bulk.bulkAppendOrInsert(&writeTransaction, writeTransaction.newRoot, batch);
-        writeTransaction.setRoot(newCatalog);
+        writeTransaction.setRoot(newCatalog, .catalog);
         _ = try writeTransaction.commit();
     }
     const bulkNs: u64 = @intCast(nowNs(io) - bulkStart);
@@ -130,7 +130,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
             const result = try rows.insert(&writeTransaction, catalogReference, &.{ primaryKey, primaryKey });
             catalogReference = result.catalogReference;
         }
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
         inserted += thisBatch;
     }

@@ -67,7 +67,7 @@ var directoryReference = try airdb.typeDirectory.createWithDefinitions(&w, &.{
 directoryReference = (try airdb.typeRouting.insert(&w, directoryReference, 0, &.{
     .{ .int = 1 }, .{ .bytes = "Ada" }, .{ .int = 1815 },
 })).directoryReference;
-w.setRoot(directoryReference);
+w.setRoot(directoryReference, .typeDirectory); // the kind is stored in the commit slot
 _ = try w.commit(); // durable here
 
 var r = try database.beginRead();

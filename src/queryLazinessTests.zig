@@ -58,7 +58,7 @@ fn buildFixture(allocator: std.mem.Allocator, path: []const u8, rowCount: u64) !
     while (rowIndex < rowCount) : (rowIndex += 1) {
         catalogReference = (try rows.insert(&writeTransaction, catalogReference, &.{ rowIndex, rowIndex % 100, rowIndex % 100 })).catalogReference;
     }
-    writeTransaction.setRoot(catalogReference);
+    writeTransaction.setRoot(catalogReference, .catalog);
     _ = try writeTransaction.commit();
     return database;
 }

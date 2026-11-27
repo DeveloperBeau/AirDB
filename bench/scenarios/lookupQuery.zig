@@ -71,7 +71,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
             .{ .kind = .int },
             .{ .kind = .int, .indexed = true },
         });
-        writeTransaction.setRoot(valueC);
+        writeTransaction.setRoot(valueC, .catalog);
         _ = try writeTransaction.commit();
         break :blk valueC;
     };
@@ -87,7 +87,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
             const result = try rows.insert(&writeTransaction, catalogReference, &.{ primaryKey, primaryKey % categoryMod });
             catalogReference = result.catalogReference;
         }
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
         inserted += thisBatch;
     }
