@@ -20,7 +20,7 @@ const harness = @import("../harness.zig");
 const Io = std.Io;
 const Reference = airdb.Reference;
 const catalog = airdb.catalog;
-const rows = airdb.rows;
+const rows = airdb.internal.rows;
 const query = airdb.query;
 
 pub const name = "lookup_query";
@@ -164,7 +164,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
         .maxNs = lat.percentile(100),
         .fileBytes = try database.fileSize(),
         .logicalBytes = database.logicalSize(),
-        .peakRssBytes = airdb.peakResidentBytes(),
+        .peakRssBytes = airdb.internal.peakResidentBytes(),
         .note = note,
     };
 }

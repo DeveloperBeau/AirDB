@@ -56,7 +56,7 @@ test "data-barrier flush failure during commit leaves the prior version intact" 
         _ = try writeTransaction.commit();
     }
     { // attempt v2; fail the FIRST flush of this session (the data barrier)
-        var fsync = airdb.FailingSyncer{ .failOn = 1 };
+        var fsync = airdb.internal.FailingSyncer{ .failOn = 1 };
         var database = try airdb.Database.openWith(testing.allocator, path, fsync.any());
         defer database.deinit();
         var writeTransaction = try database.beginWrite();
@@ -93,7 +93,7 @@ test "header-flush failure during commit does not publish v2" {
     }
     {
         // failOn = 2: data barrier (1) succeeds, header flush (2) fails -> revert, no publish.
-        var fsync = airdb.FailingSyncer{ .failOn = 2 };
+        var fsync = airdb.internal.FailingSyncer{ .failOn = 2 };
         var database = try airdb.Database.openWith(testing.allocator, path, fsync.any());
         defer database.deinit();
         var writeTransaction = try database.beginWrite();
@@ -264,7 +264,7 @@ test "after a data-barrier flush failure, the reopened database passes verifyInt
         _ = try writeTransaction.commit();
     }
     {
-        var fsync = airdb.FailingSyncer{ .failOn = 1 }; // fail the data barrier
+        var fsync = airdb.internal.FailingSyncer{ .failOn = 1 }; // fail the data barrier
         var database = try airdb.Database.openWith(testing.allocator, path, fsync.any());
         defer database.deinit();
         var writeTransaction = try database.beginWrite();
@@ -298,7 +298,7 @@ test "after a header-flush failure, the reopened database passes verifyIntegrity
         _ = try writeTransaction.commit();
     }
     {
-        var fsync = airdb.FailingSyncer{ .failOn = 2 }; // data barrier ok, header flush fails
+        var fsync = airdb.internal.FailingSyncer{ .failOn = 2 }; // data barrier ok, header flush fails
         var database = try airdb.Database.openWith(testing.allocator, path, fsync.any());
         defer database.deinit();
         var writeTransaction = try database.beginWrite();
@@ -439,4 +439,37 @@ test "a database grown well past the initial size reopens and verifies" {
         try testing.expectEqual(@as(u8, @intCast(599 & 0xff)), got[0]);
         readTransaction.end();
     }
+}
+
+fn expectExactDecls(comptime T: type, comptime expected: []const []const u8) !void {
+    inline for (comptime std.meta.declarations(T)) |declName| {
+        comptime var found = false;
+        inline for (expected) |name| {
+            if (comptime std.mem.eql(u8, declName, name)) found = true;
+        }
+        if (!found) {
+            std.debug.print("unexpected public decl: {s}\n", .{declName});
+            return error.UnexpectedPublicDecl;
+        }
+    }
+    inline for (expected) |name| {
+        if (!@hasDecl(T, name)) {
+            std.debug.print("missing public decl: {s}\n", .{name});
+            return error.MissingPublicDecl;
+        }
+    }
+}
+
+test "package root exports exactly the application API plus internal" {
+    try expectExactDecls(airdb, &.{
+        "Database",      "ReadTransaction", "WriteTransaction", "Reference",
+        "typeDirectory", "typeRouting",     "catalog",          "objects",
+        "query",         "blob",            "collections",      "links",
+        "bulk",          "migrations",      "maintenance",      "verification",
+        "compaction",    "internal",
+    });
+}
+
+test "airdb.internal exports exactly rows, FailingSyncer, peakResidentBytes and pageFaults" {
+    try expectExactDecls(airdb.internal, &.{ "rows", "FailingSyncer", "peakResidentBytes", "pageFaults" });
 }

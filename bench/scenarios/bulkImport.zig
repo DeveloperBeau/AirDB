@@ -16,7 +16,7 @@ const harness = @import("../harness.zig");
 const Io = std.Io;
 const Reference = airdb.Reference;
 const catalog = airdb.catalog;
-const rawRows = airdb.rows;
+const rawRows = airdb.internal.rows;
 const bulk = airdb.bulk;
 
 pub const name = "bulk_import";
@@ -70,7 +70,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
     }
 
     const aCommitsBefore = databaseA.metrics().commitCount;
-    const aPfBefore = airdb.pageFaults();
+    const aPfBefore = airdb.internal.pageFaults();
     const bulkStart = nowNs(io);
     {
         var writeTransaction = try databaseA.beginWrite();
@@ -79,7 +79,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
         _ = try writeTransaction.commit();
     }
     const bulkNs: u64 = @intCast(nowNs(io) - bulkStart);
-    const aPfAfter = airdb.pageFaults();
+    const aPfAfter = airdb.internal.pageFaults();
     const bulkFaults = (aPfAfter.minor - aPfBefore.minor) + (aPfAfter.major - aPfBefore.major);
     const bulkCommits = databaseA.metrics().commitCount - aCommitsBefore;
 
@@ -98,7 +98,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
     };
 
     const bCommitsBefore = databaseB.metrics().commitCount;
-    const bPfBefore = airdb.pageFaults();
+    const bPfBefore = airdb.internal.pageFaults();
     const rowwiseStart = nowNs(io);
     var inserted: usize = 0;
     while (inserted < ctx.rowCount) {
@@ -116,7 +116,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
         inserted += thisBatch;
     }
     const rowwiseNs: u64 = @intCast(nowNs(io) - rowwiseStart);
-    const bPfAfter = airdb.pageFaults();
+    const bPfAfter = airdb.internal.pageFaults();
     const rowwiseFaults = (bPfAfter.minor - bPfBefore.minor) + (bPfAfter.major - bPfBefore.major);
     const rowwiseCommits = databaseB.metrics().commitCount - bCommitsBefore;
 
@@ -151,7 +151,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
         .maxNs = 0,
         .fileBytes = fileBytes,
         .logicalBytes = logicalBytes,
-        .peakRssBytes = airdb.peakResidentBytes(),
+        .peakRssBytes = airdb.internal.peakResidentBytes(),
         .note = note,
     };
 }
