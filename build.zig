@@ -81,6 +81,8 @@ pub fn build(b: *std.Build) void {
         .linkage = .static,
     });
     b.installArtifact(lib);
+    // The C header is installed alongside the library.
+    lib.installHeader(b.path("include/airdb.h"), "airdb.h");
 
     // C smoke test: compile tests/cApiSmoke.c against include/airdb.h, link the
     // static library, and run it. Proves the C ABI is callable end to end. Its
