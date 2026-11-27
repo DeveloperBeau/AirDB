@@ -3,6 +3,10 @@ const airdb = @import("airdb");
 const testing = std.testing;
 const Io = std.Io;
 
+comptime {
+    _ = @import("usageExample.zig");
+}
+
 fn tmpFilePath(allocator: std.mem.Allocator, tmp: *testing.TmpDir, name: []const u8) ![]const u8 {
     var pathBuffer: [Io.Dir.max_path_bytes]u8 = undefined;
     const pathLen = try tmp.dir.realPath(testing.io, &pathBuffer);
