@@ -79,6 +79,43 @@ test "parse rejects an out-of-range kind byte" {
     try testing.expectError(error.Corrupt, NodeView.parse(&buffer));
 }
 
+test "parse rejects a 4-byte buffer with a valid kind" {
+    // One byte under NodeHeader.size, so the length check alone must reject it
+    // even though the kind byte is valid. The trailing three bytes are zeros in
+    // one pass and an encoded count in the other; neither may change the result.
+    const cases = [_]struct { kind: NodeKind, byte: u8 }{
+        .{ .kind = .leafValues, .byte = 0 },
+        .{ .kind = .innerReferences, .byte = 1 },
+        .{ .kind = .rawBytes, .byte = 2 },
+    };
+    for (cases) |testCase| {
+        const zeros = [_]u8{ testCase.byte, 0, 0, 0 };
+        try testing.expectError(error.Corrupt, NodeView.parse(&zeros));
+
+        var counted: [NodeHeader.size - 1]u8 = undefined;
+        counted[0] = testCase.byte;
+        std.mem.writeInt(u24, counted[1..4], 300, .little);
+        try testing.expectError(error.Corrupt, NodeView.parse(&counted));
+    }
+}
+
+test "parse accepts an exact 5-byte buffer for every kind" {
+    const cases = [_]struct { kind: NodeKind, byte: u8, count: u32 }{
+        .{ .kind = .leafValues, .byte = 0, .count = 0 },
+        .{ .kind = .innerReferences, .byte = 1, .count = 300 },
+        .{ .kind = .rawBytes, .byte = 2, .count = 4294967295 },
+    };
+    for (cases) |testCase| {
+        var buffer: [NodeHeader.size]u8 = undefined;
+        buffer[0] = testCase.byte;
+        std.mem.writeInt(u32, buffer[1..5], testCase.count, .little);
+        const view = try NodeView.parse(&buffer);
+        try testing.expectEqual(testCase.kind, view.header.kind);
+        try testing.expectEqual(testCase.count, view.header.elementCount);
+        try testing.expectEqual(@as(usize, 0), view.payload.len);
+    }
+}
+
 test "node fuzz round-trips random headers and payloads for every kind" {
     const seed: u64 = testing.random_seed;
     errdefer std.debug.print("node round-trip fuzz seed: {d}\n", .{seed});
