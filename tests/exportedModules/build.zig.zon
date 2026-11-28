@@ -1,0 +1,10 @@
+.{
+    .name = .exported_modules_check,
+    .version = "0.0.0",
+    .fingerprint = 0x7186df9a7bfde663,
+    .minimum_zig_version = "0.17.1",
+    .paths = .{ "build.zig", "build.zig.zon", "main.zig" },
+    .dependencies = .{
+        .airdb = .{ .path = "../.." },
+    },
+}
