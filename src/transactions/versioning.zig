@@ -329,3 +329,159 @@ test "falling back past a corrupt primary slot is surfaced in metrics" {
         try testing.expectEqual(@as(u64, 1), database.activeVersion);
     }
 }
+
+fn forgeEmptySlot(database: *Database, offset: usize, version: u64) void {
+    const slot = Slot{ .version = version, .rootReference = 0, .rootKind = .none, .freeListReference = 0, .logicalSize = defaultPageSize };
+    slot.encode(database.store.map[offset..][0..Slot.size]);
+}
+
+/// Create a database, forge both slots to the given versions, damage the
+/// header checksum, flush, close, reopen, and return the recovered version
+/// plus whether the fallback was surfaced.
+fn recoverWithBadHeaderChecksum(name: []const u8, versionA: u64, versionB: u64) !struct { version: u64, fallback: bool } {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpFilePath(testing.allocator, &tmp, name);
+    defer testing.allocator.free(path);
+    {
+        var database = try Database.create(testing.allocator, path);
+        defer database.deinit();
+        forgeEmptySlot(&database, slotAOff, versionA);
+        forgeEmptySlot(&database, slotBOff, versionB);
+        database.store.map[28] ^= 0xFF; // stored header CRC at [28, 32); magic stays valid
+        try database.store.syncer.flush(database.store.file);
+    }
+    var database = try Database.open(testing.allocator, path);
+    defer database.deinit();
+    return .{ .version = database.activeVersion, .fallback = database.metrics().recoveredFallback };
+}
+
+test "bad header checksum with two valid slots recovers the newer slot when it is in slot A" {
+    const result = try recoverWithBadHeaderChecksum("badcrc_a_newer.airdb", 7, 6);
+    try testing.expectEqual(@as(u64, 7), result.version);
+    try testing.expect(result.fallback);
+}
+
+test "bad header checksum with two valid slots recovers the newer slot when it is in slot B" {
+    const result = try recoverWithBadHeaderChecksum("badcrc_b_newer.airdb", 6, 7);
+    try testing.expectEqual(@as(u64, 7), result.version);
+    try testing.expect(result.fallback);
+}
+
+test "bad header checksum with two valid slots at equal versions recovers slot A" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpFilePath(testing.allocator, &tmp, "badcrc_tie.airdb");
+    defer testing.allocator.free(path);
+    {
+        var database = try Database.create(testing.allocator, path);
+        defer database.deinit();
+        // Same version, distinguishable by logicalSize so the chosen slot is observable.
+        const slotA = Slot{ .version = 5, .rootReference = 0, .rootKind = .none, .freeListReference = 0, .logicalSize = defaultPageSize };
+        const slotB = Slot{ .version = 5, .rootReference = 0, .rootKind = .none, .freeListReference = 0, .logicalSize = defaultPageSize * 2 };
+        slotA.encode(database.store.map[slotAOff..][0..Slot.size]);
+        slotB.encode(database.store.map[slotBOff..][0..Slot.size]);
+        database.store.map[28] ^= 0xFF;
+        try database.store.syncer.flush(database.store.file);
+    }
+    var database = try Database.open(testing.allocator, path);
+    defer database.deinit();
+    try testing.expect(database.metrics().recoveredFallback);
+    try testing.expectEqual(@as(u64, 5), database.activeVersion);
+    try testing.expectEqual(@as(usize, defaultPageSize), database.arena.top);
+}
+
+test "selectPublishedSlot returns the higher published version when it is in slot A" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpFilePath(testing.allocator, &tmp, "pub_a_higher.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    forgeEmptySlot(&database, slotAOff, 4);
+    forgeEmptySlot(&database, slotBOff, 3);
+    const chosen = selectPublishedSlot(&database, 10).?;
+    try testing.expectEqual(@as(u64, 4), chosen.version);
+}
+
+test "selectPublishedSlot returns the higher published version when it is in slot B" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpFilePath(testing.allocator, &tmp, "pub_b_higher.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    forgeEmptySlot(&database, slotAOff, 3);
+    forgeEmptySlot(&database, slotBOff, 4);
+    const chosen = selectPublishedSlot(&database, 10).?;
+    try testing.expectEqual(@as(u64, 4), chosen.version);
+}
+
+test "selectPublishedSlot returns slot A when both published versions are equal" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpFilePath(testing.allocator, &tmp, "pub_tie.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    const slotA = Slot{ .version = 4, .rootReference = 0, .rootKind = .none, .freeListReference = 0, .logicalSize = defaultPageSize };
+    const slotB = Slot{ .version = 4, .rootReference = 0, .rootKind = .none, .freeListReference = 0, .logicalSize = defaultPageSize * 2 };
+    slotA.encode(database.store.map[slotAOff..][0..Slot.size]);
+    slotB.encode(database.store.map[slotBOff..][0..Slot.size]);
+    const chosen = selectPublishedSlot(&database, 4).?;
+    try testing.expectEqual(@as(u64, defaultPageSize), chosen.logicalSize);
+}
+
+test "selectPublishedSlot skips a slot at latestVersion plus one and keeps a slot at latestVersion" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpFilePath(testing.allocator, &tmp, "pub_bound.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    // Unpublished in B, published at exactly latestVersion in A.
+    forgeEmptySlot(&database, slotAOff, 2);
+    forgeEmptySlot(&database, slotBOff, 3);
+    try testing.expectEqual(@as(u64, 2), selectPublishedSlot(&database, 2).?.version);
+    // Mirrored layout.
+    forgeEmptySlot(&database, slotAOff, 3);
+    forgeEmptySlot(&database, slotBOff, 2);
+    try testing.expectEqual(@as(u64, 2), selectPublishedSlot(&database, 2).?.version);
+    // Once latestVersion reaches 3 the higher slot qualifies.
+    try testing.expectEqual(@as(u64, 3), selectPublishedSlot(&database, 3).?.version);
+    // Only an unpublished slot: nothing qualifies.
+    forgeEmptySlot(&database, slotAOff, 3);
+    forgeEmptySlot(&database, slotBOff, 3);
+    try testing.expect(selectPublishedSlot(&database, 2) == null);
+}
+
+test "refreshToLatest adopts the published slot and not the unpublished slot above latestVersion" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpFilePath(testing.allocator, &tmp, "refresh_skip.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    // Published slot at exactly latestVersion in A, unpublished latestVersion + 1 in B.
+    forgeEmptySlot(&database, slotAOff, 2);
+    forgeEmptySlot(&database, slotBOff, 3);
+    database.coordination.setLatestVersion(2);
+    database.activeVersion = 1;
+    try refreshToLatest(&database);
+    try testing.expectEqual(@as(u64, 2), database.activeVersion);
+}
+
+test "refreshToLatest adopts the published slot when the unpublished slot is in slot A" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmpFilePath(testing.allocator, &tmp, "refresh_skip_b.airdb");
+    defer testing.allocator.free(path);
+    var database = try Database.create(testing.allocator, path);
+    defer database.deinit();
+    forgeEmptySlot(&database, slotAOff, 3);
+    forgeEmptySlot(&database, slotBOff, 2);
+    database.coordination.setLatestVersion(2);
+    database.activeVersion = 1;
+    try refreshToLatest(&database);
+    try testing.expectEqual(@as(u64, 2), database.activeVersion);
+}
