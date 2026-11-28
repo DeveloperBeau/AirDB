@@ -32,7 +32,7 @@ const Io = std.Io;
 const Reference = airdb.Reference;
 const catalog = airdb.catalog;
 const objects = airdb.objects;
-const rawRows = airdb.rows;
+const rawRows = airdb.internal.rows;
 const collections = airdb.collections;
 const links = airdb.links;
 const Value = catalog.Value;
@@ -290,7 +290,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
         .maxNs = combined.percentile(100),
         .fileBytes = fileBytes,
         .logicalBytes = logicalBytes,
-        .peakRssBytes = airdb.peakResidentBytes(),
+        .peakRssBytes = airdb.internal.peakResidentBytes(),
         .note = note,
     };
 
