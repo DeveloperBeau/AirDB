@@ -74,6 +74,19 @@ pub fn build(b: *std.Build) void {
     run_arch.has_side_effects = true;
     test_step.dependOn(&run_arch.step);
 
+    // Exported-module check: an out-of-tree consumer asserts the package
+    // exposes only "airdb". Its own build runs with private cache dirs.
+    const cwd = std.process.currentPathAlloc(b.graph.io, b.graph.arena) catch @panic("cwd");
+    const check_dir = std.fs.path.resolve(b.graph.arena, &.{ cwd, "tests/exportedModules" }) catch
+        @panic("exportedModules path");
+    const run_exports = b.addSystemCommand(&.{ b.graph.zig_exe, "build" });
+    run_exports.setName("check exported modules");
+    run_exports.setCwd(b.path("tests/exportedModules"));
+    run_exports.setEnvironmentVariable("ZIG_LOCAL_CACHE_DIR", b.pathJoin(&.{ check_dir, ".zig-cache", "local" }));
+    run_exports.setEnvironmentVariable("ZIG_GLOBAL_CACHE_DIR", b.pathJoin(&.{ check_dir, ".zig-cache", "global" }));
+    run_exports.has_side_effects = true;
+    test_step.dependOn(&run_exports.step);
+
     // Standalone performance harness. Not part of `test` so CI stays fast.
     const bench_mod = b.createModule(.{
         .root_source_file = b.path("bench/main.zig"),
