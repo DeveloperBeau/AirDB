@@ -7,13 +7,13 @@
 // are timed and reported in Result.note, labeled for what they actually are.
 
 const std = @import("std");
-const airdb = @import("airdb");
+const airdb = @import("airdb_internal");
 const harness = @import("../harness.zig");
 
 const Io = std.Io;
 const Reference = airdb.Reference;
 const catalog = airdb.catalog;
-const rows = airdb.internal.rows;
+const rows = airdb.rows;
 
 pub const name = "insert_recovery";
 
@@ -38,7 +38,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
     defer harness.removeScratch(ctx.*, path);
 
     // --- Insert phase --------------------------------------------------------
-    const pfBefore = airdb.internal.pageFaults();
+    const pfBefore = airdb.pageFaults();
     const insertStart = nowNs(io);
 
     var database = try airdb.Database.create(alloc, path);
@@ -70,7 +70,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
     }
 
     const insertNs: u64 = @intCast(nowNs(io) - insertStart);
-    const pfAfter = airdb.internal.pageFaults();
+    const pfAfter = airdb.pageFaults();
     const minfltDelta = pfAfter.minor - pfBefore.minor;
     const majfltDelta = pfAfter.major - pfBefore.major;
 
@@ -119,7 +119,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
         .wallNs = insertNs,
         .fileBytes = fileBytes,
         .logicalBytes = logicalBytes,
-        .peakRssBytes = airdb.internal.peakResidentBytes(),
+        .peakRssBytes = airdb.peakResidentBytes(),
         .note = note,
     };
 }

@@ -84,6 +84,7 @@ pub const RingTable = struct {
 
         // Composition: builds and wires concrete objects and exposes the boundary.
         .{ .path = "src/airdb.zig", .ring = .composition },
+        .{ .path = "src/airdb_internal.zig", .ring = .composition },
         .{ .path = "src/cApi.zig", .ring = .composition },
     };
 

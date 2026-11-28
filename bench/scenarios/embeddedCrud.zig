@@ -18,7 +18,7 @@
 // All per-op latencies fold into one combined mix for p50/p99/max.
 
 const std = @import("std");
-const airdb = @import("airdb");
+const airdb = @import("airdb_internal");
 const harness = @import("../harness.zig");
 
 const Io = std.Io;
@@ -227,7 +227,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
         .maxNs = combined.percentile(100),
         .fileBytes = fileBytes,
         .logicalBytes = logicalBytes,
-        .peakRssBytes = airdb.internal.peakResidentBytes(),
+        .peakRssBytes = airdb.peakResidentBytes(),
         .note = note,
     };
 

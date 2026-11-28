@@ -15,6 +15,15 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    // Test and bench helpers. createModule keeps it out of the package's
+    // exported modules. A compilation imports this or `airdb`, never both.
+    const internal_mod = b.createModule(.{
+        .root_source_file = b.path("src/airdb_internal.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
     const lib_tests = b.addTest(.{
         .root_module = mod,
     });
@@ -25,12 +34,24 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
-            .{ .name = "airdb", .module = mod },
+            .{ .name = "airdb_internal", .module = internal_mod },
         },
     });
     const int_tests = b.addTest(.{
         .root_module = int_test_mod,
     });
+
+    // Public surface test: observes the real package module.
+    const public_api_mod = b.createModule(.{
+        .root_source_file = b.path("tests/publicApi.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "airdb", .module = mod },
+        },
+    });
+    const public_api_tests = b.addTest(.{ .root_module = public_api_mod });
+    const run_public_api = b.addRunArtifact(public_api_tests);
 
     const run_lib = b.addRunArtifact(lib_tests);
     const run_int = b.addRunArtifact(int_tests);
@@ -38,6 +59,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_lib.step);
     test_step.dependOn(&run_int.step);
+    test_step.dependOn(&run_public_api.step);
 
     // Inward-dependency architecture test. It reads src/ at run time, so it runs
     // from the repo root and is never cached.
@@ -58,7 +80,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = .ReleaseFast,
         .link_libc = true,
-        .imports = &.{.{ .name = "airdb", .module = mod }},
+        .imports = &.{.{ .name = "airdb_internal", .module = internal_mod }},
     });
     const bench_exe = b.addExecutable(.{ .name = "airdb-bench", .root_module = bench_mod });
     const run_bench = b.addRunArtifact(bench_exe);

@@ -15,7 +15,7 @@
 //   - JSON              -> std.json.fmt(value, .{}) via the "{f}" placeholder
 
 const std = @import("std");
-const airdb = @import("airdb");
+const airdb = @import("airdb_internal");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
