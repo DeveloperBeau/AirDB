@@ -14,13 +14,13 @@
 // rather than passing silently.
 
 const std = @import("std");
-const airdb = @import("airdb");
+const airdb = @import("airdb_internal");
 const harness = @import("../harness.zig");
 
 const Io = std.Io;
 const Reference = airdb.Reference;
 const catalog = airdb.catalog;
-const rows = airdb.internal.rows;
+const rows = airdb.rows;
 const compaction = airdb.compaction;
 
 pub const name = "churn_compaction";
@@ -191,7 +191,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
         .maxNs = stepLat.percentile(100),
         .fileBytes = try database.fileSize(),
         .logicalBytes = database.logicalSize(),
-        .peakRssBytes = airdb.internal.peakResidentBytes(),
+        .peakRssBytes = airdb.peakResidentBytes(),
         .note = note,
     };
 }

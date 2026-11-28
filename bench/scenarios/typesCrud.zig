@@ -25,14 +25,14 @@
 // update path for those kinds and each bump the row version.
 
 const std = @import("std");
-const airdb = @import("airdb");
+const airdb = @import("airdb_internal");
 const harness = @import("../harness.zig");
 
 const Io = std.Io;
 const Reference = airdb.Reference;
 const catalog = airdb.catalog;
 const objects = airdb.objects;
-const rawRows = airdb.internal.rows;
+const rawRows = airdb.rows;
 const collections = airdb.collections;
 const links = airdb.links;
 const Value = catalog.Value;
@@ -290,7 +290,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
         .maxNs = combined.percentile(100),
         .fileBytes = fileBytes,
         .logicalBytes = logicalBytes,
-        .peakRssBytes = airdb.internal.peakResidentBytes(),
+        .peakRssBytes = airdb.peakResidentBytes(),
         .note = note,
     };
 

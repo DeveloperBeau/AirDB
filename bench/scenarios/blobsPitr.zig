@@ -17,14 +17,14 @@
 // the reported p50/p99/max latencies come from Part B's latest-snapshot reads.
 
 const std = @import("std");
-const airdb = @import("airdb");
+const airdb = @import("airdb_internal");
 const harness = @import("../harness.zig");
 
 const Io = std.Io;
 const Reference = airdb.Reference;
 const blob = airdb.blob;
 const catalog = airdb.catalog;
-const rows = airdb.internal.rows;
+const rows = airdb.rows;
 
 pub const name = "blobs_pitr";
 
@@ -233,7 +233,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
         .maxNs = latLatest.percentile(100),
         .fileBytes = fileBytes,
         .logicalBytes = logicalBytes,
-        .peakRssBytes = airdb.internal.peakResidentBytes(),
+        .peakRssBytes = airdb.peakResidentBytes(),
         .note = note,
     };
 }
