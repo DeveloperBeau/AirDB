@@ -40,12 +40,14 @@ pub const Slot = struct {
         std.mem.writeInt(u32, buffer[crcOffset..][0..4], std.hash.Crc32.hash(buffer[0..crcOffset]), .little);
     }
 
-    /// Decode a slot from `buffer`. error.BadChecksum when the stored checksum
+    /// Decode a slot from the first `size` bytes of `buffer` (extra bytes are
+    /// ignored). error.Corrupt when `buffer` is shorter than `size`,
+    /// error.BadChecksum when the stored checksum
     /// does not match, error.BadRootKind when the kind byte is unknown or
     /// disagrees with the root reference, error.ReservedNotZero when a
     /// reserved byte is set.
-    pub fn decode(buffer: []const u8) error{ BadChecksum, BadRootKind, ReservedNotZero }!Slot {
-        std.debug.assert(buffer.len >= size);
+    pub fn decode(buffer: []const u8) error{ Corrupt, BadChecksum, BadRootKind, ReservedNotZero }!Slot {
+        if (buffer.len < size) return error.Corrupt;
         const stored = std.mem.readInt(u32, buffer[crcOffset..][0..4], .little);
         if (stored != std.hash.Crc32.hash(buffer[0..crcOffset])) return error.BadChecksum;
         for (buffer[kindOffset + 1 .. crcOffset]) |reserved| {
@@ -245,5 +247,139 @@ test "fuzz: slot decode accepts every valid slot exactly and never accepts a for
         } else |_| {}
 
         seed +%= 0x9E3779B97F4A7C15;
+    }
+}
+
+fn sampleSlot(kind: RootKind) Slot {
+    return .{
+        .version = 5,
+        .rootReference = if (kind == .none) 0 else 4096,
+        .rootKind = kind,
+        .freeListReference = 8192,
+        .logicalSize = 16384,
+    };
+}
+
+test "decode of a 40-byte buffer holding a valid slot is accepted and reads back" {
+    var buffer: [Slot.size]u8 = undefined;
+    const slot = sampleSlot(.catalog);
+    slot.encode(&buffer);
+    try testing.expectEqual(@as(usize, 40), buffer.len);
+    try testing.expectEqual(slot, try Slot.decode(buffer[0..40]));
+}
+
+test "decode of a 39-byte prefix of a valid slot is rejected as corrupt, not a panic" {
+    var buffer: [Slot.size]u8 = undefined;
+    sampleSlot(.catalog).encode(&buffer);
+    try testing.expectError(error.Corrupt, Slot.decode(buffer[0..39]));
+    try testing.expectError(error.Corrupt, Slot.decode(buffer[0..0]));
+    try testing.expectError(error.Corrupt, Slot.decode(buffer[0..36]));
+}
+
+test "decode of a 41-byte buffer whose first 40 bytes are a valid slot ignores the extra byte" {
+    var buffer: [Slot.size + 1]u8 = undefined;
+    const slot = sampleSlot(.blob);
+    slot.encode(buffer[0..Slot.size]);
+    inline for (.{ 0x00, 0xFF }) |extra| {
+        buffer[Slot.size] = extra;
+        try testing.expectEqual(slot, try Slot.decode(&buffer));
+    }
+}
+
+test "decode accepts each valid kind with a matching root and rejects kind byte 4 as BadRootKind" {
+    const kinds = [_]RootKind{ .none, .blob, .catalog, .typeDirectory };
+    for (kinds, 0..) |kind, expectedByte| {
+        var buffer: [Slot.size]u8 = undefined;
+        const slot = sampleSlot(kind);
+        slot.encode(&buffer);
+        try testing.expectEqual(@as(u8, @intCast(expectedByte)), buffer[32]);
+        try testing.expectEqual(slot, try Slot.decode(&buffer));
+    }
+    var buffer: [Slot.size]u8 = undefined;
+    sampleSlot(.typeDirectory).encode(&buffer);
+    buffer[32] = 4;
+    restampChecksum(&buffer);
+    try testing.expectError(error.BadRootKind, Slot.decode(&buffer));
+    // The same bytes with the last valid kind byte are accepted, so the kind byte alone decides.
+    buffer[32] = 3;
+    restampChecksum(&buffer);
+    try testing.expectEqual(RootKind.typeDirectory, (try Slot.decode(&buffer)).rootKind);
+}
+
+test "slot version reads back exactly for 0, 1 and maxInt(u64)" {
+    const versions = [_]u64{ 0, 1, std.math.maxInt(u64) - 1, std.math.maxInt(u64) };
+    for (versions) |version| {
+        var buffer: [Slot.size]u8 = undefined;
+        var slot = sampleSlot(.blob);
+        slot.version = version;
+        slot.encode(&buffer);
+        try testing.expectEqual(version, (try Slot.decode(&buffer)).version);
+        try testing.expectEqual(version, std.mem.readInt(u64, buffer[0..8], .little));
+    }
+}
+
+test "flipping any version or checksum byte without restamping is BadChecksum" {
+    var index: usize = 0;
+    while (index < Slot.size) : (index += 1) {
+        if (index >= 8 and index < 36) continue;
+        var buffer: [Slot.size]u8 = undefined;
+        sampleSlot(.blob).encode(&buffer);
+        buffer[index] ^= 0x01;
+        try testing.expectError(error.BadChecksum, Slot.decode(&buffer));
+    }
+}
+
+test "after a restamp the decoded version equals the little-endian u64 in bytes 0 to 8" {
+    var buffer: [Slot.size]u8 = undefined;
+    sampleSlot(.blob).encode(&buffer);
+    buffer[0..8].* = .{ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
+    restampChecksum(&buffer);
+    try testing.expectEqual(@as(u64, 0x0807060504030201), (try Slot.decode(&buffer)).version);
+}
+
+// Seeded by testing.random_seed so --seed=N reproduces a failure.
+test "fuzz: random valid slots round-trip and truncated, extended, mutated or forged buffers are never misread" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+    var round: usize = 0;
+    while (round < 400) : (round += 1) {
+        const kindByte = random.intRangeAtMost(u8, 0, 3);
+        const kind: RootKind = @fromBackingInt(@intCast(kindByte));
+        const slot = Slot{
+            .version = random.int(u64),
+            .rootReference = if (kindByte == 0) 0 else random.intRangeAtMost(u64, 1, std.math.maxInt(u64)),
+            .rootKind = kind,
+            .freeListReference = random.int(u64),
+            .logicalSize = random.int(u64),
+        };
+        var buffer: [Slot.size + 8]u8 = undefined;
+        random.bytes(&buffer);
+        slot.encode(buffer[0..Slot.size]);
+
+        // Any length of at least 40 reads back the slot; any shorter is Corrupt.
+        const length = random.intRangeAtMost(usize, 0, buffer.len);
+        if (length >= Slot.size) {
+            try testing.expectEqual(slot, try Slot.decode(buffer[0..length]));
+        } else {
+            try testing.expectError(error.Corrupt, Slot.decode(buffer[0..length]));
+        }
+
+        // A single flipped bit in the checksummed bytes or the CRC is a checksum failure.
+        var flipped = buffer;
+        const bit = random.uintLessThan(usize, Slot.size * 8);
+        flipped[bit / 8] ^= @as(u8, 1) << @intCast(bit % 8);
+        try testing.expectError(error.BadChecksum, Slot.decode(flipped[0..Slot.size]));
+
+        // Swapping the two halves of the field area must not decode to the original.
+        var swapped = buffer;
+        const head: [8]u8 = swapped[0..8].*;
+        swapped[0..8].* = swapped[8..16].*;
+        swapped[8..16].* = head;
+        if (Slot.decode(swapped[0..Slot.size])) |accepted| {
+            try testing.expectEqual(std.mem.readInt(u64, swapped[0..8], .little), accepted.version);
+            try testing.expectEqual(std.mem.readInt(u64, swapped[8..16], .little), accepted.rootReference);
+        } else |_| {}
     }
 }

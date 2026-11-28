@@ -24,7 +24,7 @@ const Io = std.Io;
 const Reference = airdb.Reference;
 const blob = airdb.blob;
 const catalog = airdb.catalog;
-const rows = airdb.rows;
+const rows = airdb.internal.rows;
 
 pub const name = "blobs_pitr";
 
@@ -233,7 +233,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
         .maxNs = latLatest.percentile(100),
         .fileBytes = fileBytes,
         .logicalBytes = logicalBytes,
-        .peakRssBytes = airdb.peakResidentBytes(),
+        .peakRssBytes = airdb.internal.peakResidentBytes(),
         .note = note,
     };
 }

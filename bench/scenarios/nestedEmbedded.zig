@@ -195,7 +195,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
         .maxNs = combined.percentile(100),
         .fileBytes = fileBytes,
         .logicalBytes = logicalBytes,
-        .peakRssBytes = airdb.peakResidentBytes(),
+        .peakRssBytes = airdb.internal.peakResidentBytes(),
         .note = note,
     };
 
