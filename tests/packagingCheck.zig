@@ -6,6 +6,8 @@
 //!     Copy only the build.zig.zon .paths entries to a fresh tree, then build
 //!     it and run its tests with -Dpackaging_check=false. The nested zig uses
 //!     its own absolute cache dirs under that tree, not the outer caches.
+//!     After the nested test, those cache dirs must contain objects, and the
+//!     outer cache must not have received the nested zig's objects.
 
 const std = @import("std");
 const Io = std.Io;
@@ -81,6 +83,85 @@ fn absolutePath(io: Io, gpa: Allocator, cwd: Dir, rel: []const u8) ![:0]u8 {
         return fail("cannot resolve path {s}: {t}", .{ rel, err });
 }
 
+const ObjectNames = struct {
+    gpa: Allocator,
+    names: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *ObjectNames) void {
+        for (self.names.items) |name| self.gpa.free(name);
+        self.names.deinit(self.gpa);
+    }
+
+    fn contains(self: ObjectNames, name: []const u8) bool {
+        for (self.names.items) |existing| {
+            if (std.mem.eql(u8, existing, name)) return true;
+        }
+        return false;
+    }
+};
+
+fn objectDirPath(gpa: Allocator, cache_root: []const u8) ![]u8 {
+    return std.fs.path.join(gpa, &.{ cache_root, "o" });
+}
+
+fn listObjectNames(io: Io, gpa: Allocator, cwd: Dir, cache_root: []const u8) !ObjectNames {
+    var set: ObjectNames = .{ .gpa = gpa };
+    errdefer set.deinit();
+    const dir_path = try objectDirPath(gpa, cache_root);
+    defer gpa.free(dir_path);
+    var dir = cwd.openDir(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return set,
+        else => return fail("cannot open {s}: {t}", .{ dir_path, err }),
+    };
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch |err| return fail("cannot read {s}: {t}", .{ dir_path, err })) |entry| {
+        const copy = try gpa.dupe(u8, entry.name);
+        errdefer gpa.free(copy);
+        try set.names.append(gpa, copy);
+    }
+    return set;
+}
+
+fn requireNestedObjects(io: Io, gpa: Allocator, cwd: Dir, cache_root: []const u8, what: []const u8) !void {
+    const dir_path = try objectDirPath(gpa, cache_root);
+    defer gpa.free(dir_path);
+    var dir = cwd.openDir(io, dir_path, .{ .iterate = true }) catch |err|
+        return fail("nested zig did not write {s} ({t}); {s}", .{ dir_path, err, what });
+    defer dir.close(io);
+    var it = dir.iterate();
+    const first = it.next(io) catch |err| return fail("cannot read {s}: {t}", .{ dir_path, err });
+    if (first == null)
+        return fail("nested zig wrote no objects under {s}; {s}", .{ dir_path, what });
+}
+
+fn assertOuterDidNotGainNested(
+    io: Io,
+    gpa: Allocator,
+    cwd: Dir,
+    outer_root: []const u8,
+    before: ObjectNames,
+    nested_roots: []const []const u8,
+) !void {
+    var after = try listObjectNames(io, gpa, cwd, outer_root);
+    defer after.deinit();
+    for (after.names.items) |name| {
+        if (before.contains(name)) continue;
+        for (nested_roots) |nested_root| {
+            const nested_entry = try std.fs.path.join(gpa, &.{ nested_root, "o", name });
+            defer gpa.free(nested_entry);
+            const nested_abs = cwd.realPathFileAlloc(io, nested_entry, gpa) catch continue;
+            defer gpa.free(nested_abs);
+            const outer_entry = try std.fs.path.join(gpa, &.{ outer_root, "o", name });
+            defer gpa.free(outer_entry);
+            const outer_abs = try absolutePath(io, gpa, cwd, outer_entry);
+            defer gpa.free(outer_abs);
+            if (std.mem.eql(u8, nested_abs, outer_abs))
+                return fail("nested zig wrote {s} into the outer build cache at {s}", .{ name, outer_abs });
+        }
+    }
+}
+
 fn runZig(io: Io, gpa: Allocator, environ: *const std.process.Environ.Map, tree: []const u8, argv: []const []const u8, what: []const u8) !void {
     const result = std.process.run(gpa, io, .{ .argv = argv, .cwd = .{ .path = tree }, .environ_map = environ }) catch |err|
         return fail("cannot start {s}: {t}", .{ what, err });
@@ -128,9 +209,6 @@ fn checkPaths(
     defer gpa.free(outer_local);
     const outer_global = try absolutePath(io, gpa, cwd, global_cache);
     defer gpa.free(outer_global);
-    if (std.mem.eql(u8, nested_local, outer_local) or std.mem.eql(u8, nested_local, outer_global) or
-        std.mem.eql(u8, nested_global, outer_local) or std.mem.eql(u8, nested_global, outer_global))
-        return fail("nested cache path must differ from the outer build cache", .{});
 
     var environ = try environ_in.clone(gpa);
     defer environ.deinit();
@@ -142,6 +220,11 @@ fn checkPaths(
     var dest = try cwd.openDir(io, tree, .{});
     defer dest.close(io);
     for (entries) |entry| try copyTree(io, gpa, source, dest, entry);
+
+    var before_local = try listObjectNames(io, gpa, cwd, outer_local);
+    defer before_local.deinit();
+    var before_global = try listObjectNames(io, gpa, cwd, outer_global);
+    defer before_global.deinit();
 
     try runZig(io, gpa, &environ, tree, &.{ zig, "build", "-Dpackaging_check=false" }, "build");
 
@@ -158,4 +241,24 @@ fn checkPaths(
     try runZig(io, gpa, &environ, tree, &.{ zig, "build", "test", "-Dpackaging_check=false" }, "test step");
     const elapsed = start.durationTo(Io.Timestamp.now(io, .awake));
     std.debug.print("packaging check: paths-only test step took {d}ms\n", .{elapsed.toMilliseconds()});
+
+    try requireNestedObjects(
+        io,
+        gpa,
+        cwd,
+        nested_local,
+        "ZIG_LOCAL_CACHE_DIR must be the paths-only tree .zig-cache, not the outer cache",
+    );
+    try requireNestedObjects(
+        io,
+        gpa,
+        cwd,
+        nested_global,
+        "ZIG_GLOBAL_CACHE_DIR must be the paths-only tree global-cache, not the outer cache",
+    );
+
+    const nested_roots = [_][]const u8{ nested_local, nested_global };
+    try assertOuterDidNotGainNested(io, gpa, cwd, outer_local, before_local, &nested_roots);
+    if (!std.mem.eql(u8, outer_local, outer_global))
+        try assertOuterDidNotGainNested(io, gpa, cwd, outer_global, before_global, &nested_roots);
 }
