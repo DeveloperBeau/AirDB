@@ -1,6 +1,10 @@
 const std = @import("std");
 const airdb = @import("airdb");
 
+comptime {
+    _ = @import("usageExample.zig");
+}
+
 fn expectExactDecls(comptime T: type, comptime expected: []const []const u8) !void {
     inline for (comptime std.meta.declarations(T)) |declName| {
         comptime var found = false;

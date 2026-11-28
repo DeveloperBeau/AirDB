@@ -26,9 +26,18 @@ server, a WAL, or a dependency tree.
 Pre-1.0. The on-disk format is not yet stable between commits. POSIX (macOS,
 Linux) and Windows.
 
-CI runs the tests on macOS, Linux and Windows. It also build-checks the static
-library for iOS (device and simulator) and Android (aarch64 and x86_64). Those
-targets are built only, not tested.
+| Platform | CI | Notes |
+| --- | --- | --- |
+| Linux (ubuntu-latest) | tested | `zig build test` |
+| macOS (macos-latest) | tested | `zig build test` |
+| Windows (windows-latest) | tested | `zig build test` |
+| iOS device (`aarch64-ios`) | build only | static library; nothing runs |
+| iOS simulator (`aarch64-ios-simulator`, `x86_64-ios-simulator`) | build only | static library; nothing runs |
+| Android (`aarch64-linux-android`, `x86_64-linux-android`) | build only | static library; nothing runs |
+
+The mobile builds are cross-compiled on Linux. Zig needs no Apple SDK or
+Android NDK for the static library. CI also checks formatting and runs the
+benchmark suite on Linux; the benchmark job is not a support claim.
 
 ## Building
 
@@ -37,7 +46,7 @@ Requires Zig 0.17.1.
 ```sh
 zig build test    # unit + integration tests + C ABI smoke test
 zig build bench   # performance suite (1M-entity tier)
-zig build         # static library: zig-out/lib/libairdb.a + include/airdb.h
+zig build         # static library: zig-out/lib/libairdb.a + zig-out/include/airdb.h
 ```
 
 Benchmark options:
@@ -53,6 +62,8 @@ zig build bench -- --only=NAME       # single scenario
 
 ## Quick look (Zig)
 
+See [docs/usage.md](docs/usage.md) for adding the package and for queries.
+
 ```zig
 const airdb = @import("airdb");
 
@@ -60,20 +71,20 @@ var database = try airdb.Database.create(allocator, "/abs/path/app.airdb");
 defer database.deinit();
 
 // Define a type: primaryKey (int) + name (blob) + an indexed int.
-var w = try database.beginWrite();
-var directoryReference = try airdb.typeDirectory.createWithDefinitions(&w, &.{
+var writeTransaction = try database.beginWrite();
+var directoryReference = try airdb.typeDirectory.createWithDefinitions(&writeTransaction, &.{
     &.{ .{ .kind = .int }, .{ .kind = .blob }, .{ .kind = .int, .indexed = true } },
 });
-directoryReference = (try airdb.typeRouting.insert(&w, directoryReference, 0, &.{
+directoryReference = (try airdb.typeRouting.insert(&writeTransaction, directoryReference, 0, &.{
     .{ .int = 1 }, .{ .bytes = "Ada" }, .{ .int = 1815 },
 })).directoryReference;
-w.setRoot(directoryReference, .typeDirectory); // the kind is stored in the commit slot
-_ = try w.commit(); // durable here
+writeTransaction.setRoot(directoryReference, .typeDirectory); // the kind is stored in the commit slot
+_ = try writeTransaction.commit(); // durable here
 
-var r = try database.beginRead();
-defer r.end();
+var readTransaction = try database.beginRead();
+defer readTransaction.end();
 var out: [3]airdb.typeDirectory.Value = undefined;
-_ = try airdb.typeRouting.get(&r, r.root(), 0, 1, &out);
+_ = try airdb.typeRouting.get(&readTransaction, readTransaction.root(), 0, 1, &out);
 ```
 
 ## Quick look (C)
@@ -95,6 +106,8 @@ airdb_close(database);
 
 ## Documentation
 
+- [docs/usage.md](docs/usage.md): adding the package, and Zig and C usage
+- [CHANGELOG.md](CHANGELOG.md): release notes
 - [docs/architecture.md](docs/architecture.md) — layers, commit protocol,
   MVCC and space reclamation, compaction
 - [docs/features.md](docs/features.md) — the full feature surface with code
