@@ -4,7 +4,8 @@
 //!     The installed include/airdb.h must match the source header.
 //! paths <zig> <build root> <local cache> <global cache> <entry>...
 //!     Copy only the build.zig.zon .paths entries to a fresh tree, then build
-//!     it and run its tests with -Dpackaging_check=false.
+//!     it and run its tests with -Dpackaging_check=false. The nested zig uses
+//!     its own absolute cache dirs under that tree, not the outer caches.
 
 const std = @import("std");
 const Io = std.Io;
@@ -75,6 +76,11 @@ fn copyTree(io: Io, gpa: Allocator, from: Dir, to: Dir, entry: []const u8) !void
     }
 }
 
+fn absolutePath(io: Io, gpa: Allocator, cwd: Dir, rel: []const u8) ![:0]u8 {
+    return cwd.realPathFileAlloc(io, rel, gpa) catch |err|
+        return fail("cannot resolve path {s}: {t}", .{ rel, err });
+}
+
 fn runZig(io: Io, gpa: Allocator, environ: *const std.process.Environ.Map, tree: []const u8, argv: []const []const u8, what: []const u8) !void {
     const result = std.process.run(gpa, io, .{ .argv = argv, .cwd = .{ .path = tree }, .environ_map = environ }) catch |err|
         return fail("cannot start {s}: {t}", .{ what, err });
@@ -100,13 +106,36 @@ fn checkPaths(
     const cwd = Dir.cwd();
     const tree = try std.fs.path.join(gpa, &.{ local_cache, "packaging-check" });
     defer gpa.free(tree);
-    // `zig build` has no cache flag, so the global cache goes in via the environment.
-    var environ = try environ_in.clone(gpa);
-    defer environ.deinit();
-    try environ.put("ZIG_GLOBAL_CACHE_DIR", global_cache);
 
     try cwd.deleteTree(io, tree);
     try cwd.createDirPath(io, tree);
+
+    // The nested zig must not inherit the outer ZIG_LOCAL_CACHE_DIR or share
+    // the outer global cache: both point at the repo .zig-cache in CI, and a
+    // concurrent compile then fails on Windows with AccessDenied.
+    const nested_local_rel = try std.fs.path.join(gpa, &.{ tree, ".zig-cache" });
+    defer gpa.free(nested_local_rel);
+    const nested_global_rel = try std.fs.path.join(gpa, &.{ tree, "global-cache" });
+    defer gpa.free(nested_global_rel);
+    try cwd.createDirPath(io, nested_local_rel);
+    try cwd.createDirPath(io, nested_global_rel);
+
+    const nested_local = try absolutePath(io, gpa, cwd, nested_local_rel);
+    defer gpa.free(nested_local);
+    const nested_global = try absolutePath(io, gpa, cwd, nested_global_rel);
+    defer gpa.free(nested_global);
+    const outer_local = try absolutePath(io, gpa, cwd, local_cache);
+    defer gpa.free(outer_local);
+    const outer_global = try absolutePath(io, gpa, cwd, global_cache);
+    defer gpa.free(outer_global);
+    if (std.mem.eql(u8, nested_local, outer_local) or std.mem.eql(u8, nested_local, outer_global) or
+        std.mem.eql(u8, nested_global, outer_local) or std.mem.eql(u8, nested_global, outer_global))
+        return fail("nested cache path must differ from the outer build cache", .{});
+
+    var environ = try environ_in.clone(gpa);
+    defer environ.deinit();
+    try environ.put("ZIG_LOCAL_CACHE_DIR", nested_local);
+    try environ.put("ZIG_GLOBAL_CACHE_DIR", nested_global);
 
     var source = try cwd.openDir(io, root, .{});
     defer source.close(io);
