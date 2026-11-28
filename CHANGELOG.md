@@ -37,8 +37,12 @@ project is licensed under MPL-2.0.
 - `zig build` installs `airdb.h` next to the library, at
   `zig-out/include/airdb.h`. `build.zig.zon` `.paths` also include `include/`,
   `LICENSE` and `README.md`, so the package carries the header.
-- Seeded fuzz tests for the index node parsers, and for the catalog, sidecar
-  and node parsers.
+- Seeded fuzz tests for the catalog, sidecar and node parsers, the index node
+  parsers, and the file header and commit-slot parsers.
+- Exact test pins for commit-slot selection on recovery and publish:
+  `selectActiveSlot` recovers the newer of two valid slots when the header
+  checksum is bad, and `selectPublishedSlot` returns the higher of two
+  published slots.
 - Relocate-and-poison test helper and related recovery tests, closing
   issue 67.
 - CI runs the tests on Linux, macOS and Windows. It build-checks the static
@@ -50,27 +54,33 @@ project is licensed under MPL-2.0.
 ### Changed
 
 - Breaking: `WriteTransaction.setRoot` takes a required kind, `setRoot(reference,
-  kind)`. The kind is one of type directory, catalog or raw blob, and is
-  recorded in the commit slot.
+  kind)`. The kind is an `airdb.RootKind` (`none`, `blob`, `catalog` or
+  `typeDirectory`) and is recorded in the commit slot.
 - Breaking: the commit slot is 40 bytes and carries a kind byte. The only
-  format version is `airdb_0001`.
+  format version is `airdb_0001`. There is one format, and the version does
+  not count up before release. A file without that magic fails with
+  `error.BadMagic`.
 - Breaking: `airdb_open` on an existing file returns `NULL` unless the root is
   a single catalog. Type-directory and raw-blob roots are refused and the file
   is left untouched. Files created through `airdb_open` are catalog rooted and
   keep opening.
 - Breaking: `maybeCompactStep` and `compactToNewFile` return `RootKindMismatch`
-  on a root that is not a type directory.
+  on a root that is not a type directory. `compactInPlace` does the same.
 - `VerifyError` gains `RootUnreadable`.
 - Breaking, pre-1.0: the Zig package root no longer re-exports internals. The
   public API is the application surface (`Database`, `ReadTransaction`,
-  `WriteTransaction`, `Reference`, `typeDirectory`, `typeRouting`, `catalog`,
+  `WriteTransaction`, `Reference`, `RootKind`, `typeDirectory`, `typeRouting`, `catalog`,
   `objects`, `query`, `blob`, `collections`, `links`, `bulk`, `migrations`,
-  `maintenance`, `verification`, `compaction`) plus a marked `airdb.internal`
-  namespace for this repository's tests and bench. Zig callers that imported
-  removed names from `@import("airdb")` must stop. The C ABI is unchanged.
+  `maintenance`, `verification`, `compaction`). Test and bench helpers live in
+  a separate `airdb_internal` module. It is created with `b.createModule`, so
+  it is test-only and is not exported to package users, who see the `airdb`
+  module only. Zig callers that imported removed names, or `airdb.internal`,
+  from `@import("airdb")` must stop. The C ABI is unchanged.
 
 ### Fixed
 
+- `Slot.decode` returns `error.Corrupt` on a buffer shorter than 40 bytes. It
+  used to assert. The layout is unchanged.
 - `verifyIntegrity` no longer guesses the root kind, so type-directory and
   raw-blob roots verify correctly (issue 64).
 - Predicate reads on indexed paths are pinned against relocation.

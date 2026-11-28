@@ -15,6 +15,15 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    // Test and bench helpers. createModule keeps it out of the package's
+    // exported modules. A compilation imports this or `airdb`, never both.
+    const internal_mod = b.createModule(.{
+        .root_source_file = b.path("src/airdb_internal.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
     const lib_tests = b.addTest(.{
         .root_module = mod,
     });
@@ -25,12 +34,24 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
-            .{ .name = "airdb", .module = mod },
+            .{ .name = "airdb_internal", .module = internal_mod },
         },
     });
     const int_tests = b.addTest(.{
         .root_module = int_test_mod,
     });
+
+    // Public surface test: observes the real package module.
+    const public_api_mod = b.createModule(.{
+        .root_source_file = b.path("tests/publicApi.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "airdb", .module = mod },
+        },
+    });
+    const public_api_tests = b.addTest(.{ .root_module = public_api_mod });
+    const run_public_api = b.addRunArtifact(public_api_tests);
 
     const run_lib = b.addRunArtifact(lib_tests);
     const run_int = b.addRunArtifact(int_tests);
@@ -38,6 +59,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_lib.step);
     test_step.dependOn(&run_int.step);
+    test_step.dependOn(&run_public_api.step);
 
     // Inward-dependency architecture test. It reads src/ at run time, so it runs
     // from the repo root and is never cached.
@@ -58,7 +80,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = .ReleaseFast,
         .link_libc = true,
-        .imports = &.{.{ .name = "airdb", .module = mod }},
+        .imports = &.{.{ .name = "airdb_internal", .module = internal_mod }},
     });
     const bench_exe = b.addExecutable(.{ .name = "airdb-bench", .root_module = bench_mod });
     const run_bench = b.addRunArtifact(bench_exe);
@@ -81,6 +103,8 @@ pub fn build(b: *std.Build) void {
         .linkage = .static,
     });
     b.installArtifact(lib);
+    // The C header is installed alongside the library.
+    lib.installHeader(b.path("include/airdb.h"), "airdb.h");
 
     // C smoke test: compile tests/cApiSmoke.c against include/airdb.h, link the
     // static library, and run it. Proves the C ABI is callable end to end. Its
@@ -101,5 +125,36 @@ pub fn build(b: *std.Build) void {
         });
         const run_c_smoke = b.addRunArtifact(c_smoke);
         test_step.dependOn(&run_c_smoke.step);
+    }
+
+    const packaging_check = b.option(bool, "packaging_check", "Check the installed C header and a .paths-only package tree") orelse true;
+    if (packaging_check) {
+        const check_mod = b.createModule(.{
+            .root_source_file = b.path("tests/packagingCheck.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        });
+        const check_exe = b.addExecutable(.{ .name = "packagingCheck", .root_module = check_mod });
+
+        // The installed header must match include/airdb.h.
+        const run_header = b.addRunArtifact(check_exe);
+        run_header.setName("check installed airdb.h");
+        run_header.addArg("header");
+        run_header.addFileArg(b.path("include/airdb.h"));
+        run_header.addDirectoryArg(.{ .relative = .{ .base = .install_prefix, .sub_path = "" } });
+        run_header.step.dependOn(b.getInstallStep());
+        test_step.dependOn(&run_header.step);
+
+        // A tree holding only the .paths entries must build and pass its tests.
+        const run_paths = b.addRunArtifact(check_exe);
+        run_paths.setName("check .paths-only package tree");
+        run_paths.addArg("paths");
+        run_paths.addFileArg(std.Build.LazyPath.zig_exe);
+        run_paths.addDirectoryArg(b.path("."));
+        run_paths.addDirectoryArg(.{ .relative = .{ .base = .local_cache, .sub_path = "" } });
+        run_paths.addDirectoryArg(.{ .relative = .{ .base = .global_cache, .sub_path = "" } });
+        inline for (@import("build.zig.zon").paths) |entry| run_paths.addArg(entry);
+        run_paths.has_side_effects = true;
+        test_step.dependOn(&run_paths.step);
     }
 }

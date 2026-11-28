@@ -18,7 +18,7 @@
 // All per-op latencies fold into one combined mix for p50/p99/max.
 
 const std = @import("std");
-const airdb = @import("airdb");
+const airdb = @import("airdb_internal");
 const harness = @import("../harness.zig");
 
 const Io = std.Io;
@@ -77,7 +77,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
     {
         var writeTransaction = try database.beginWrite();
         const directoryReference = try typeDirectory.createTypes(&writeTransaction, &ownerSchema, &.{ false, true });
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -112,7 +112,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
                 try createLat.add(alloc, elapsedNs);
                 try combined.add(alloc, elapsedNs);
             }
-            writeTransaction.setRoot(directoryReference);
+            writeTransaction.setRoot(directoryReference, .typeDirectory);
             _ = try writeTransaction.commit();
             inserted += thisBatch;
         }
@@ -164,7 +164,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
                 try updateLat.add(alloc, elapsedNs);
                 try combined.add(alloc, elapsedNs);
             }
-            writeTransaction.setRoot(directoryReference);
+            writeTransaction.setRoot(directoryReference, .typeDirectory);
             _ = try writeTransaction.commit();
             done += thisBatch;
         }
@@ -193,7 +193,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
                     try combined.add(alloc, elapsedNs);
                 }
             }
-            writeTransaction.setRoot(directoryReference);
+            writeTransaction.setRoot(directoryReference, .typeDirectory);
             _ = try writeTransaction.commit();
             done += thisBatch;
         }

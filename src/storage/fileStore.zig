@@ -26,16 +26,8 @@ const FileSyncer = @import("syncer.zig").FileSyncer;
 // Public constants
 // ---------------------------------------------------------------------------
 
-/// File magic doubling as the format version ("airdb" + _NNNN).
-/// _0003: a `.blob` property may carry a value index, keyed by the stored bytes
-/// truncated to blobIndexKey.maxLength. A `_0002` file could hold a `.blob`
-/// property flagged indexed whose value index was built over blob REFERENCES
-/// (migrations.addProperty rejected only collection kinds), which no audit
-/// could detect because both directions of the audit agreed on the same
-/// nonsense key. Refusing such a file at open is the point of the bump.
-/// _0002: the free list is persisted as a chain of bounded chunks
-/// ([count u32][nextReference u64][extents...]), not a single unbounded node.
-pub const airdbMagic: u64 = 0x6169726462_0003;
+/// File magic: "airdb_0001". `open` fails with `error.BadMagic` on any other value.
+pub const airdbMagic: u64 = 0x6169726462_0001;
 /// Size of the header page; the header and both commit slots live in it.
 pub const defaultPageSize: u32 = 4096;
 
@@ -405,16 +397,16 @@ test "create writes a header that reopen reads back" {
         try testing.expectEqual(airdbMagic, store.header.magic);
         // A hand literal, not airdbMagic: comparing against the same constant
         // on both sides cannot fail however the implementation behaves.
-        try testing.expectEqual(@as(u64, 0x6169726462_0003), store.header.magic);
+        try testing.expectEqual(@as(u64, 0x6169726462_0001), store.header.magic);
     }
 }
 
-test "a _0002 file is refused" {
+test "a file without the current magic is refused with error.BadMagic" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var pathBuffer: [Io.Dir.max_path_bytes]u8 = undefined;
     const pathLen = try tmp.dir.realPath(testing.io, &pathBuffer);
-    const filePath = try std.fs.path.join(testing.allocator, &.{ pathBuffer[0..pathLen], "old_magic.airdb" });
+    const filePath = try std.fs.path.join(testing.allocator, &.{ pathBuffer[0..pathLen], "bad_magic.airdb" });
     defer testing.allocator.free(filePath);
 
     {
@@ -422,14 +414,12 @@ test "a _0002 file is refused" {
         store.deinit();
     }
 
-    // Overwrite bytes [0..8) with the _0002 magic, written by hand, while the
-    // file is genuinely closed (no FileStore handle open).
+    // Overwrite bytes [0..8) with a value that is not any airdb magic, while
+    // the file is genuinely closed (no FileStore handle open).
     {
         const file = try Io.Dir.openFileAbsolute(testing.io, filePath, .{ .mode = .read_write });
         defer file.close(testing.io);
-        var oldMagicBytes: [8]u8 = undefined;
-        std.mem.writeInt(u64, &oldMagicBytes, 0x6169726462_0002, .little);
-        try file.writePositionalAll(testing.io, &oldMagicBytes, 0);
+        try file.writePositionalAll(testing.io, "notairdb", 0);
     }
 
     try testing.expectError(error.BadMagic, FileStore.open(testing.allocator, filePath, FileSyncer.any()));
@@ -466,4 +456,260 @@ test "grow beyond the reservation fails cleanly" {
     defer store.deinit();
     // The check rejects before any setLength, so no oversized file is created.
     try testing.expectError(error.FileTooLarge, store.grow(FileStore.maxReserved + defaultPageSize));
+}
+
+// ---------------------------------------------------------------------------
+// Header parser boundary pins and seeded fuzz
+// ---------------------------------------------------------------------------
+
+const HeaderBytes = [defaultPageSize]u8;
+
+// Hand-encode a header page: magic, pageSize, endianness, activeSlot,
+// logicalSize, zero reserved bytes and a CRC32 over [0, 28). Written from the
+// documented layout, not through writeHeader, so it checks the parser against
+// the spec rather than against itself.
+fn encodeHeaderBytes(bytes: []u8, magic: u64, pageSize: u32, endianness: u8, activeSlot: u8, logicalSize: u64) void {
+    @memset(bytes[0..32], 0);
+    std.mem.writeInt(u64, bytes[0..8], magic, .little);
+    std.mem.writeInt(u32, bytes[8..12], pageSize, .little);
+    bytes[12] = endianness;
+    bytes[13] = activeSlot;
+    std.mem.writeInt(u64, bytes[16..24], logicalSize, .little);
+    std.mem.writeInt(u32, bytes[28..32], std.hash.Crc32.hash(bytes[0..28]), .little);
+}
+
+fn restampHeaderChecksum(bytes: []u8) void {
+    std.mem.writeInt(u32, bytes[28..32], std.hash.Crc32.hash(bytes[0..28]), .little);
+}
+
+const HeaderHarness = struct {
+    tmp: testing.TmpDir,
+    path: []u8,
+    store: FileStore,
+    realMap: []align(std.heap.page_size_min) u8,
+    page: HeaderBytes align(std.heap.page_size_min) = undefined,
+
+    fn start(self: *HeaderHarness) !void {
+        self.tmp = testing.tmpDir(.{});
+        errdefer self.tmp.cleanup();
+        var pathBuffer: [Io.Dir.max_path_bytes]u8 = undefined;
+        const pathLen = try self.tmp.dir.realPath(testing.io, &pathBuffer);
+        self.path = try std.fs.path.join(testing.allocator, &.{ pathBuffer[0..pathLen], "header.airdb" });
+        errdefer testing.allocator.free(self.path);
+        self.store = try FileStore.create(testing.allocator, self.path, FileSyncer.any());
+        self.realMap = self.store.map;
+        @memset(&self.page, 0);
+    }
+
+    fn finish(self: *HeaderHarness) void {
+        self.store.map = self.realMap;
+        self.store.deinit();
+        testing.allocator.free(self.path);
+        self.tmp.cleanup();
+    }
+
+    // Parse the first `length` bytes of the local page as the mapping.
+    fn parse(self: *HeaderHarness, length: usize) !void {
+        self.store.map = self.page[0..length];
+        defer self.store.map = self.realMap;
+        try self.store.reReadHeaderForTest();
+    }
+};
+
+test "readHeader accepts a 4096-byte map with a valid header and reads every field back" {
+    var harness: HeaderHarness = undefined;
+    try harness.start();
+    defer harness.finish();
+    encodeHeaderBytes(&harness.page, 0x6169726462_0001, 8192, 1, 1, 0x0102030405060708);
+    try harness.parse(4096);
+    try testing.expect(harness.store.headerChecksumOk);
+    try testing.expectEqual(@as(u64, 0x6169726462_0001), harness.store.header.magic);
+    try testing.expectEqual(@as(u32, 8192), harness.store.header.pageSize);
+    try testing.expectEqual(Endianness.little, harness.store.header.endianness);
+    try testing.expectEqual(@as(u8, 1), harness.store.header.activeSlot);
+    try testing.expectEqual(@as(u64, 0x0102030405060708), harness.store.header.logicalSize);
+}
+
+test "readHeader rejects a 4095-byte map as Corrupt even when the header bytes are valid" {
+    var harness: HeaderHarness = undefined;
+    try harness.start();
+    defer harness.finish();
+    encodeHeaderBytes(&harness.page, 0x6169726462_0001, 4096, 1, 0, 4096);
+    try testing.expectError(error.Corrupt, harness.parse(4095));
+    try testing.expectError(error.Corrupt, harness.parse(32));
+    try testing.expectError(error.Corrupt, harness.parse(0));
+    try harness.parse(4096);
+}
+
+test "FileStore.open rejects a 4095-byte file as Corrupt and accepts a valid 4096-byte file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var pathBuffer: [Io.Dir.max_path_bytes]u8 = undefined;
+    const pathLen = try tmp.dir.realPath(testing.io, &pathBuffer);
+    const shortPath = try std.fs.path.join(testing.allocator, &.{ pathBuffer[0..pathLen], "short.airdb" });
+    defer testing.allocator.free(shortPath);
+    const exactPath = try std.fs.path.join(testing.allocator, &.{ pathBuffer[0..pathLen], "exact.airdb" });
+    defer testing.allocator.free(exactPath);
+
+    var bytes: HeaderBytes = undefined;
+    @memset(&bytes, 0);
+    encodeHeaderBytes(&bytes, 0x6169726462_0001, 4096, 1, 0, 4096);
+    {
+        const file = try Io.Dir.createFileAbsolute(testing.io, shortPath, .{});
+        defer file.close(testing.io);
+        try file.writePositionalAll(testing.io, bytes[0..4095], 0);
+    }
+    {
+        const file = try Io.Dir.createFileAbsolute(testing.io, exactPath, .{});
+        defer file.close(testing.io);
+        try file.writePositionalAll(testing.io, bytes[0..4096], 0);
+    }
+    try testing.expectError(error.Corrupt, FileStore.open(testing.allocator, shortPath, FileSyncer.any()));
+    var store = try FileStore.open(testing.allocator, exactPath, FileSyncer.any());
+    defer store.deinit();
+    try testing.expect(store.headerChecksumOk);
+    try testing.expectEqual(@as(u64, 4096), store.header.logicalSize);
+}
+
+test "header magic airdb_0001 is accepted and its neighbours are BadMagic" {
+    var harness: HeaderHarness = undefined;
+    try harness.start();
+    defer harness.finish();
+    encodeHeaderBytes(&harness.page, 0x6169726462_0001, 4096, 1, 0, 4096);
+    try harness.parse(4096);
+    try testing.expectEqual(airdbMagic, harness.store.header.magic);
+
+    const rejected = [_]u64{
+        0x6169726462_0000,
+        0x6169726462_0002,
+        0x6169726462_0001 - 1,
+        0x6169726462_0001 + 1,
+        0x6169726463_0001,
+        0x6169726461_0001,
+        0x0069726462_0001,
+        0,
+        std.math.maxInt(u64),
+    };
+    for (rejected) |magic| {
+        encodeHeaderBytes(&harness.page, magic, 4096, 1, 0, 4096);
+        try testing.expectError(error.BadMagic, harness.parse(4096));
+    }
+}
+
+test "header endianness 1 (little) is accepted and 0, 2 (big) and 3 are UnsupportedEndianness" {
+    var harness: HeaderHarness = undefined;
+    try harness.start();
+    defer harness.finish();
+    encodeHeaderBytes(&harness.page, 0x6169726462_0001, 4096, 1, 0, 4096);
+    try harness.parse(4096);
+    try testing.expectEqual(Endianness.little, harness.store.header.endianness);
+    for ([_]u8{ 0, 2, 3, 0xFF }) |byte| {
+        encodeHeaderBytes(&harness.page, 0x6169726462_0001, 4096, byte, 0, 4096);
+        try testing.expectError(error.UnsupportedEndianness, harness.parse(4096));
+    }
+}
+
+test "header checksum match keeps headerChecksumOk true and a mismatch clears it without failing" {
+    var harness: HeaderHarness = undefined;
+    try harness.start();
+    defer harness.finish();
+    encodeHeaderBytes(&harness.page, 0x6169726462_0001, 16384, 1, 1, 65536);
+    try harness.parse(4096);
+    try testing.expect(harness.store.headerChecksumOk);
+
+    // Wrong stored CRC: the fields still parse to the bytes, only the flag drops.
+    harness.page[28] ^= 0x01;
+    try harness.parse(4096);
+    try testing.expect(!harness.store.headerChecksumOk);
+    try testing.expectEqual(@as(u32, 16384), harness.store.header.pageSize);
+    try testing.expectEqual(@as(u8, 1), harness.store.header.activeSlot);
+    try testing.expectEqual(@as(u64, 65536), harness.store.header.logicalSize);
+
+    // Each byte of the stored CRC and each covered byte counts.
+    var index: usize = 0;
+    while (index < 32) : (index += 1) {
+        encodeHeaderBytes(&harness.page, 0x6169726462_0001, 16384, 1, 1, 65536);
+        harness.page[index] ^= 0x80;
+        if (index < 8 or index == 12) {
+            try testing.expect(std.meta.isError(harness.parse(4096)));
+        } else {
+            try harness.parse(4096);
+            try testing.expect(!harness.store.headerChecksumOk);
+        }
+    }
+
+    // A bad checksum with a bad magic is still BadMagic, and bad endianness still wins over the CRC.
+    encodeHeaderBytes(&harness.page, 0x6169726462_0002, 4096, 1, 0, 4096);
+    harness.page[28] ^= 0xFF;
+    try testing.expectError(error.BadMagic, harness.parse(4096));
+}
+
+test "fuzz: random valid headers parse back exactly and mutated, truncated or restamped headers are never misread" {
+    const seed: u64 = testing.random_seed;
+    errdefer std.debug.print("seed: {d}\n", .{seed});
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    var harness: HeaderHarness = undefined;
+    try harness.start();
+    defer harness.finish();
+
+    var round: usize = 0;
+    while (round < 300) : (round += 1) {
+        const pageSize = random.int(u32);
+        const activeSlot = random.int(u8);
+        const logicalSize = random.int(u64);
+        encodeHeaderBytes(&harness.page, airdbMagic, pageSize, 1, activeSlot, logicalSize);
+        random.bytes(harness.page[32..]);
+
+        // Direction 1: a valid header reads back exactly.
+        try harness.parse(4096);
+        try testing.expect(harness.store.headerChecksumOk);
+        try testing.expectEqual(airdbMagic, harness.store.header.magic);
+        try testing.expectEqual(pageSize, harness.store.header.pageSize);
+        try testing.expectEqual(Endianness.little, harness.store.header.endianness);
+        try testing.expectEqual(activeSlot, harness.store.header.activeSlot);
+        try testing.expectEqual(logicalSize, harness.store.header.logicalSize);
+
+        // Any shorter map is Corrupt, whatever the bytes say.
+        try testing.expectError(error.Corrupt, harness.parse(random.uintLessThan(usize, 4096)));
+
+        // Direction 2a: flip one bit in [0, 32) without restamping. The CRC32 detects any
+        // single-bit flip, so a parse that succeeds must report headerChecksumOk false and
+        // fields equal to the mutated bytes.
+        const bit = random.uintLessThan(usize, 32 * 8);
+        const byteIndex = bit / 8;
+        harness.page[byteIndex] ^= @as(u8, 1) << @intCast(bit % 8);
+        const magic = std.mem.readInt(u64, harness.page[0..8], .little);
+        if (magic != airdbMagic) {
+            try testing.expectError(error.BadMagic, harness.parse(4096));
+        } else if (harness.page[12] != 1) {
+            try testing.expectError(error.UnsupportedEndianness, harness.parse(4096));
+        } else {
+            try harness.parse(4096);
+            try testing.expect(!harness.store.headerChecksumOk);
+            try testing.expectEqual(std.mem.readInt(u32, harness.page[8..12], .little), harness.store.header.pageSize);
+            try testing.expectEqual(harness.page[13], harness.store.header.activeSlot);
+            try testing.expectEqual(std.mem.readInt(u64, harness.page[16..24], .little), harness.store.header.logicalSize);
+        }
+
+        // Direction 2b: random bytes in [0, 28) then a restamped CRC. Acceptance must follow
+        // exactly the magic and endianness rules, and the checksum flag must be true.
+        const damage = random.intRangeAtMost(usize, 1, 3);
+        var hit: usize = 0;
+        while (hit < damage) : (hit += 1) harness.page[random.uintLessThan(usize, 28)] = random.int(u8);
+        restampHeaderChecksum(&harness.page);
+        const forgedMagic = std.mem.readInt(u64, harness.page[0..8], .little);
+        if (forgedMagic != airdbMagic) {
+            try testing.expectError(error.BadMagic, harness.parse(4096));
+        } else if (harness.page[12] != 1) {
+            try testing.expectError(error.UnsupportedEndianness, harness.parse(4096));
+        } else {
+            try harness.parse(4096);
+            try testing.expect(harness.store.headerChecksumOk);
+            try testing.expectEqual(std.mem.readInt(u32, harness.page[8..12], .little), harness.store.header.pageSize);
+            try testing.expectEqual(harness.page[13], harness.store.header.activeSlot);
+            try testing.expectEqual(std.mem.readInt(u64, harness.page[16..24], .little), harness.store.header.logicalSize);
+        }
+    }
 }

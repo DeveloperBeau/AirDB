@@ -23,9 +23,8 @@ transactions or bulk operations rather than many small commits.
 
 ## Format stability
 
-Pre-1.0, the on-disk format changes without migration support. A file
-written by an older build may fail to open or fail integrity checks against a
-newer one. Ship a matched engine with your app.
+Pre-1.0, the on-disk format is not stable between commits. See
+[format.md](format.md).
 
 ## Primary keys and schema
 

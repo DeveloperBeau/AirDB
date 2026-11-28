@@ -398,6 +398,8 @@ fn verifyEquivalent(allocator: std.mem.Allocator, source: anytype, sourceDirecto
 pub fn compactToNewFile(allocator: std.mem.Allocator, srcPath: []const u8, dstPath: []const u8) !void {
     var sourceDatabase = try @import("../database.zig").Database.open(allocator, srcPath);
     defer sourceDatabase.deinit();
+    // The root must be a type directory; refuse before creating the destination file.
+    if (sourceDatabase.activeRootKind != .typeDirectory) return error.RootKindMismatch;
     var srcR = try sourceDatabase.beginRead();
     defer srcR.end();
     const sourceDirectoryReference = srcR.root();
@@ -448,7 +450,7 @@ pub fn compactToNewFile(allocator: std.mem.Allocator, srcPath: []const u8, dstPa
     // VERIFY before publishing. On any mismatch, abort (no commit) -> dst discarded.
     try verifyEquivalent(allocator, &srcR, sourceDirectoryReference, &dstW, destinationDirectoryReference);
 
-    dstW.setRoot(destinationDirectoryReference);
+    dstW.setRoot(destinationDirectoryReference, .typeDirectory);
     _ = try dstW.commit();
     dstCommitted = true;
     destinationDatabase.deinit();

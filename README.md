@@ -46,7 +46,7 @@ Requires Zig 0.17.1.
 ```sh
 zig build test    # unit + integration tests + C ABI smoke test
 zig build bench   # performance suite (1M-entity tier)
-zig build         # static library: zig-out/lib/libairdb.a + include/airdb.h
+zig build         # static library: zig-out/lib/libairdb.a + zig-out/include/airdb.h
 ```
 
 Benchmark options:
@@ -78,7 +78,7 @@ var directoryReference = try airdb.typeDirectory.createWithDefinitions(&writeTra
 directoryReference = (try airdb.typeRouting.insert(&writeTransaction, directoryReference, 0, &.{
     .{ .int = 1 }, .{ .bytes = "Ada" }, .{ .int = 1815 },
 })).directoryReference;
-writeTransaction.setRoot(directoryReference);
+writeTransaction.setRoot(directoryReference, .typeDirectory); // the kind is stored in the commit slot
 _ = try writeTransaction.commit(); // durable here
 
 var readTransaction = try database.beginRead();

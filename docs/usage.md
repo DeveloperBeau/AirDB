@@ -27,10 +27,10 @@ exe.root_module.addImport("airdb", airdb.module("airdb"));
 In your code, `const airdb = @import("airdb");`.
 
 The application API is `Database`, `ReadTransaction`, `WriteTransaction`,
-`Reference`, and the modules `typeDirectory`, `typeRouting`, `catalog`,
+`Reference`, `RootKind`, and the modules `typeDirectory`, `typeRouting`, `catalog`,
 `objects`, `query`, `blob`, `collections`, `links`, `bulk`, `migrations`,
-`maintenance`, `verification` and `compaction`. `airdb.internal` holds helpers
-for this repository's tests and bench. Do not use it from an application.
+`maintenance`, `verification` and `compaction`. Applications import `airdb` only. `airdb_internal` is a test-only module for
+this repository's tests and bench. It is not exported to package users.
 
 ## Create or open a database
 
@@ -55,12 +55,12 @@ var directoryReference = try airdb.typeDirectory.createWithDefinitions(&writeTra
 directoryReference = (try airdb.typeRouting.insert(&writeTransaction, directoryReference, 0, &.{
     .{ .int = 1 }, .{ .bytes = "Ada" }, .{ .int = 1815 },
 })).directoryReference;
-writeTransaction.setRoot(directoryReference);
+writeTransaction.setRoot(directoryReference, .typeDirectory);
 _ = try writeTransaction.commit(); // durable here
 ```
 
-`setRoot` also records what kind of object the root is (type directory,
-catalog or raw blob). Check its signature in the version you depend on.
+`setRoot` takes the root kind, an `airdb.RootKind` (`none`, `blob`, `catalog`
+or `typeDirectory`). The kind is recorded in the commit slot.
 
 ## Read
 

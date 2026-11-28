@@ -31,7 +31,7 @@ allocation at the section size.
 ## The commit protocol
 
 The header page holds two commit slots (A and B), each a CRC32-checksummed
-`(version, root_reference, free_list_reference, logical_size)` record, plus a header whose
+`(version, root_reference, free_list_reference, logical_size, root_kind)` record, plus a header whose
 `active_slot` byte is the commit pointer.
 
 1. Build the new persistent free list and write it into the arena.
@@ -133,7 +133,10 @@ N-descent implementation wouldn't already pay when they are sparse.
 
 `verifyIntegrity` audits both structures in both directions (every live row
 covered; every entry resolves to a live, agreeing row), on top of header,
-slot, root, and free-list validation.
+slot, root, and free-list validation. It reads the root's kind from the
+commit slot (none, blob, catalog or typeDirectory) and never guesses: a
+catalog root is audited as one type, a type directory type by type, and a
+tagged root that does not parse is an error.
 
 ## Compaction
 

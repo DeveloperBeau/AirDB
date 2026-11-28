@@ -94,7 +94,7 @@ test "compactType frees the replaced column set" {
             const version = (try rows.getByPrimaryKey(&writeTransaction, catalogReference, primaryKey, &out)).?;
             catalogReference = (try rows.delete(&writeTransaction, catalogReference, primaryKey, version)).ok;
         }
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
 
@@ -264,7 +264,7 @@ test "all value kinds deep-copy across databases preserving keys" {
         catalogReference = (try objects.deleteTyped(&writeTransaction, catalogReference, 3, version)).ok;
 
         srcNextKey = (try catalog.loadCatalog(&writeTransaction, catalogReference)).nextKey;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
 
@@ -275,7 +275,7 @@ test "all value kinds deep-copy across databases preserving keys" {
         var dstW = try destinationDatabase.beginWrite();
         var destinationCatalog = try copyTypeRows(&srcRead, sourceCatalog, &dstW);
         destinationCatalog = try rebuildBacklinks(&dstW, destinationCatalog);
-        dstW.setRoot(destinationCatalog);
+        dstW.setRoot(destinationCatalog, .catalog);
         _ = try dstW.commit();
         srcRead.end();
     }
@@ -371,7 +371,7 @@ test "compactToNewFile produces a verified, smaller, equivalent file" {
             const dres = try typeRouting.deleteNullifyCrossType(&writeTransaction, directoryReference, 1, index, version);
             directoryReference = dres.ok;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -463,7 +463,7 @@ test "compaction preserves dict and set-of-blob" {
         const dres = try typeRouting.deleteNullifyCrossType(&writeTransaction, directoryReference, 0, 2, version);
         directoryReference = dres.ok;
 
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -526,7 +526,7 @@ test "compaction preserves a large (chunked) blob" {
         var directoryReference = try typeDirectory.createTypes(&writeTransaction, &schema, &.{false});
         directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = 1 }, .{ .bytes = big } })).directoryReference;
         directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = 2 }, .{ .bytes = "small" } })).directoryReference;
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -900,7 +900,7 @@ test "compactInPlace preserves value indexes and passes verifyIntegrity" {
         while (primaryKey < 50) : (primaryKey += 1) {
             directoryReference = (try typeRouting.insert(&writeTransaction, directoryReference, 0, &.{ .{ .int = primaryKey }, .{ .int = primaryKey % 5 } })).directoryReference;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
         database.deinit();
     }
@@ -962,7 +962,7 @@ test "compactInPlace shrinks and preserves data" {
             const dres = try typeRouting.deleteNullifyCrossType(&writeTransaction, directoryReference, 1, index, version);
             directoryReference = dres.ok;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
 
         preTop = database.arena.top;
@@ -1078,7 +1078,7 @@ test "compactInPlace preserves blob value indexes and passes verifyIntegrity" {
             const version = (try typeRouting.get(&writeTransaction, directoryReference, 0, primaryKey, &out)).?;
             directoryReference = (try typeRouting.delete(&writeTransaction, directoryReference, 0, primaryKey, version)).ok;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
         database.deinit();
     }
@@ -1158,7 +1158,7 @@ test "compactToNewFile preserves blob value indexes" {
             const version = (try typeRouting.get(&writeTransaction, directoryReference, 0, primaryKey, &out)).?;
             directoryReference = (try typeRouting.delete(&writeTransaction, directoryReference, 0, primaryKey, version)).ok;
         }
-        writeTransaction.setRoot(directoryReference);
+        writeTransaction.setRoot(directoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
     }
 
@@ -1195,4 +1195,80 @@ test "compactToNewFile preserves blob value indexes" {
     try query.where(&readTransaction, catalogReference, .{ .predicate = .{ .comparison = .{ .property = 1, .operator = .beginsWith, .value = .{ .bytes = &compactionSharedPrefix } } } }, &beginsHits, testing.allocator);
     std.mem.sort(u64, beginsHits.items, {}, std.sort.asc(u64));
     try testing.expectEqualSlices(u64, expectedBegins.items, beginsHits.items);
+}
+
+test "compactToNewFile and compactInPlace refuse any root that is not a type directory" {
+    const RootKind = @import("rootKind.zig").RootKind;
+    // `none` is a database created and never given a root; `noneCommitted` commits root 0 as `.none`.
+    const Case = enum { catalogRoot, blobRoot, neverRooted, noneCommitted };
+    inline for (comptime std.enums.values(Case)) |case| {
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const srcPath = try cmpTmpPath(testing.allocator, &tmp, "wrong_kind_src.airdb");
+        defer testing.allocator.free(srcPath);
+        const dstPath = try cmpTmpPath(testing.allocator, &tmp, "wrong_kind_dst.airdb");
+        defer testing.allocator.free(dstPath);
+        var version: u64 = undefined;
+        var root: u64 = undefined;
+        var expectedKind: RootKind = undefined;
+        {
+            var database = try Database.create(testing.allocator, srcPath);
+            defer database.deinit();
+            switch (case) {
+                .neverRooted => {},
+                .noneCommitted => {
+                    var writeTransaction = try database.beginWrite();
+                    writeTransaction.setRoot(0, .none);
+                    _ = try writeTransaction.commit();
+                },
+                .catalogRoot => {
+                    var writeTransaction = try database.beginWrite();
+                    const catalogReference = try catalog.createFromDefinitions(&writeTransaction, &.{.{ .kind = .int }});
+                    writeTransaction.setRoot(catalogReference, .catalog);
+                    _ = try writeTransaction.commit();
+                },
+                .blobRoot => {
+                    var writeTransaction = try database.beginWrite();
+                    const allocation = try writeTransaction.alloc(8);
+                    @memcpy(allocation.bytes, "HELLOAID");
+                    writeTransaction.setRoot(allocation.reference, .blob);
+                    _ = try writeTransaction.commit();
+                },
+            }
+            version = database.activeVersion;
+            root = database.activeRoot;
+            expectedKind = database.activeRootKind;
+        }
+        switch (case) {
+            .catalogRoot => try testing.expectEqual(RootKind.catalog, expectedKind),
+            .blobRoot => try testing.expectEqual(RootKind.blob, expectedKind),
+            .neverRooted, .noneCommitted => try testing.expectEqual(RootKind.none, expectedKind),
+        }
+        const before = try tmp.dir.readFileAlloc(testing.io, "wrong_kind_src.airdb", testing.allocator, .unlimited);
+        defer testing.allocator.free(before);
+
+        try testing.expectError(error.RootKindMismatch, compactToNewFile(testing.allocator, srcPath, dstPath));
+        try testing.expectError(error.FileNotFound, tmp.dir.access(testing.io, "wrong_kind_dst.airdb", .{}));
+        try testing.expectError(error.FileNotFound, tmp.dir.access(testing.io, "wrong_kind_src.airdb.compacting", .{}));
+        {
+            const mid = try tmp.dir.readFileAlloc(testing.io, "wrong_kind_src.airdb", testing.allocator, .unlimited);
+            defer testing.allocator.free(mid);
+            try testing.expectEqualSlices(u8, before, mid);
+        }
+
+        try testing.expectError(error.RootKindMismatch, compactInPlace(testing.allocator, srcPath));
+        try testing.expectError(error.FileNotFound, tmp.dir.access(testing.io, "wrong_kind_dst.airdb", .{}));
+        try testing.expectError(error.FileNotFound, tmp.dir.access(testing.io, "wrong_kind_src.airdb.compacting", .{}));
+
+        {
+            var database = try Database.open(testing.allocator, srcPath);
+            defer database.deinit();
+            try testing.expectEqual(version, database.activeVersion);
+            try testing.expectEqual(root, database.activeRoot);
+            try testing.expectEqual(expectedKind, database.activeRootKind);
+        }
+        const after = try tmp.dir.readFileAlloc(testing.io, "wrong_kind_src.airdb", testing.allocator, .unlimited);
+        defer testing.allocator.free(after);
+        try testing.expectEqualSlices(u8, before, after);
+    }
 }

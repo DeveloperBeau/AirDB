@@ -25,7 +25,7 @@
 // update path for those kinds and each bump the row version.
 
 const std = @import("std");
-const airdb = @import("airdb");
+const airdb = @import("airdb_internal");
 const harness = @import("../harness.zig");
 
 const Io = std.Io;
@@ -103,7 +103,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
             .{ .kind = .set, .element = .int }, // 6 set of int
             .{ .kind = .set, .element = .blob }, // 7 set of blob
         });
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
 
@@ -164,7 +164,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
                 try createLat.add(alloc, elapsedNs);
                 try combined.add(alloc, elapsedNs);
             }
-            writeTransaction.setRoot(catalogReference);
+            writeTransaction.setRoot(catalogReference, .catalog);
             _ = try writeTransaction.commit();
             inserted += thisBatch;
         }
@@ -223,7 +223,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
                 try updateLat.add(alloc, elapsedNs);
                 try combined.add(alloc, elapsedNs);
             }
-            writeTransaction.setRoot(catalogReference);
+            writeTransaction.setRoot(catalogReference, .catalog);
             _ = try writeTransaction.commit();
             done += thisBatch;
         }
@@ -257,7 +257,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
                     else => {},
                 }
             }
-            writeTransaction.setRoot(catalogReference);
+            writeTransaction.setRoot(catalogReference, .catalog);
             _ = try writeTransaction.commit();
             done += thisBatch;
         }

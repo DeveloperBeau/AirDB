@@ -19,7 +19,7 @@ fn run(allocator: std.mem.Allocator, path: []const u8) !u64 {
     directoryReference = (try airdb.typeRouting.insert(&writeTransaction, directoryReference, 0, &.{
         .{ .int = 1 }, .{ .bytes = "Ada" }, .{ .int = 1815 },
     })).directoryReference;
-    writeTransaction.setRoot(directoryReference);
+    writeTransaction.setRoot(directoryReference, .typeDirectory);
     _ = try writeTransaction.commit(); // durable here
 
     var readTransaction = try database.beginRead();

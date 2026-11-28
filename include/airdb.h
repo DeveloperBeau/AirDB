@@ -37,7 +37,8 @@ typedef struct AirdbTxn AirdbTxn;
 
 /* Open (creating if absent with `propertyCount` int properties, property 0 is the
  * primary key). `path` must be absolute. Returns NULL on failure (including a
- * non-absolute path). */
+ * non-absolute path). An existing file whose root is not a single catalog
+ * returns NULL. */
 AirdbDatabase *airdb_open(const char *path, uint16_t propertyCount);
 
 /* Close and free the handle. Safe with NULL. */

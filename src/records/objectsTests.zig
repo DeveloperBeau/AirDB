@@ -103,7 +103,7 @@ test "update applies on a matching version" {
         var writeTransaction = try database.beginWrite();
         catalogReference = try create(&writeTransaction, 3);
         catalogReference = (try insert(&writeTransaction, catalogReference, &.{ 100, 7, 1 })).catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     {
@@ -117,7 +117,7 @@ test "update applies on a matching version" {
         const res = try update(&writeTransaction, writeTransaction.newRoot, 100, &.{ 100, 77, 1 }, fetchedVersion);
         try testing.expect(res == .ok);
         catalogReference = res.ok.catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     {
@@ -176,7 +176,7 @@ test "update conflicts on a stale version" {
         var writeTransaction = try database.beginWrite();
         catalogReference = try create(&writeTransaction, 3);
         catalogReference = (try insert(&writeTransaction, catalogReference, &.{ 100, 7, 1 })).catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     {
@@ -267,7 +267,7 @@ test "objects persist across commit and reopen" {
         var catalogReference = try create(&writeTransaction, 2); // primaryKey + one value
         var index: u64 = 0;
         while (index < 1000) : (index += 1) catalogReference = (try insert(&writeTransaction, catalogReference, &.{ index, index * 2 })).catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     {
@@ -322,7 +322,7 @@ test "100k objects with updates and deletes match a reference map after reopen" 
                 _ = reference.remove(primaryKey);
             }
         }
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     {
@@ -434,7 +434,7 @@ test "strings persist across reopen" {
             const name = try std.fmt.bufPrint(&buffer, "name-{d}", .{index});
             catalogReference = (try insertTyped(&writeTransaction, catalogReference, &.{ .{ .int = index }, .{ .bytes = name } })).catalogReference;
         }
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     {
@@ -702,7 +702,7 @@ test "deleteTyped frees the row's collection storage" {
             .{ .setInt = &.{ 1, 2, 3 } },
             .{ .dictInt = &.{ .{ .key = "k1", .value = 10 }, .{ .key = "k2", .value = 20 } } },
         })).catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     // Deleting the row must record the collection trees as in-flight frees.
@@ -883,7 +883,7 @@ test "deleteTyped frees a self-referencing linkSet root exactly once" {
         const ins = try insertTyped(&writeTransaction, catalogReference, &.{ .{ .int = 1 }, .{ .linkSet = &.{} } });
         catalogReference = ins.catalogReference;
         catalogReference = try links.linkSetAdd(&writeTransaction, catalogReference, 1, 1, ins.objectKey); // set contains own objectKey
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
     var writeTransaction = try database.beginWrite();

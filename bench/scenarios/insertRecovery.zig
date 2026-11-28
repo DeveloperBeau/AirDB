@@ -7,7 +7,7 @@
 // are timed and reported in Result.note, labeled for what they actually are.
 
 const std = @import("std");
-const airdb = @import("airdb");
+const airdb = @import("airdb_internal");
 const harness = @import("../harness.zig");
 
 const Io = std.Io;
@@ -48,7 +48,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
     var catalogReference: Reference = blk: {
         var writeTransaction = try database.beginWrite();
         const catalogReference = try catalog.create(&writeTransaction, 2);
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
         break :blk catalogReference;
     };
@@ -64,7 +64,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
             const result = try rows.insert(&writeTransaction, catalogReference, &.{ primaryKey, primaryKey });
             catalogReference = result.catalogReference;
         }
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
         inserted += thisBatch;
     }

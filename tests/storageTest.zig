@@ -1,11 +1,7 @@
 const std = @import("std");
-const airdb = @import("airdb");
+const airdb = @import("airdb_internal");
 const testing = std.testing;
 const Io = std.Io;
-
-comptime {
-    _ = @import("usageExample.zig");
-}
 
 fn tmpFilePath(allocator: std.mem.Allocator, tmp: *testing.TmpDir, name: []const u8) ![]const u8 {
     var pathBuffer: [Io.Dir.max_path_bytes]u8 = undefined;
@@ -25,7 +21,7 @@ test "recovery survives a corrupted header by falling back to the best valid slo
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "GOODDATA");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     { // scramble activeSlot (offset 13) and the header crc (offset 28) on disk, leaving slots intact
@@ -56,7 +52,7 @@ test "data-barrier flush failure during commit leaves the prior version intact" 
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(4);
         @memcpy(allocation.bytes, "v1__");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     { // attempt v2; fail the FIRST flush of this session (the data barrier)
@@ -66,7 +62,7 @@ test "data-barrier flush failure during commit leaves the prior version intact" 
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(4);
         @memcpy(allocation.bytes, "v2!!");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         const preVersion = database.activeVersion;
         const preRoot = database.activeRoot;
         try testing.expectError(error.Durability, writeTransaction.commit());
@@ -92,7 +88,7 @@ test "header-flush failure during commit does not publish v2" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(4);
         @memcpy(allocation.bytes, "v1__");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     {
@@ -103,7 +99,7 @@ test "header-flush failure during commit does not publish v2" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(4);
         @memcpy(allocation.bytes, "v2!!");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         const preVersion = database.activeVersion;
         const preRoot = database.activeRoot;
         try testing.expectError(error.Durability, writeTransaction.commit());
@@ -141,6 +137,38 @@ test "opening a file with bad magic fails cleanly" {
     try testing.expectError(error.BadMagic, airdb.Database.open(testing.allocator, path));
 }
 
+test "neighbouring magic values are refused with error.BadMagic by Database.open" {
+    // airdb_0000 and airdb_0002 are simply unknown magics; neither is a supported format.
+    // Hand literals, not airdbMagic: the expected values must not move with the constant.
+    const current: u64 = 0x6169726462_0001;
+    const neighbours = [_]u64{ current - 1, current + 1 };
+    const io = std.Io.Threaded.global_single_threaded.io();
+    for (neighbours) |neighbour| {
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const path = try tmpFilePath(testing.allocator, &tmp, "neighbour.airdb");
+        defer testing.allocator.free(path);
+        {
+            var database = try airdb.Database.create(testing.allocator, path);
+            database.deinit();
+        }
+        {
+            const file = try std.Io.Dir.openFileAbsolute(io, path, .{ .mode = .read_write });
+            defer file.close(io);
+            var magicBytes: [8]u8 = undefined;
+            std.mem.writeInt(u64, &magicBytes, neighbour, .little);
+            try file.writePositionalAll(io, &magicBytes, 0);
+            try file.sync(io);
+        }
+        const before = try std.Io.Dir.cwd().readFileAlloc(io, path, testing.allocator, .unlimited);
+        defer testing.allocator.free(before);
+        try testing.expectError(error.BadMagic, airdb.Database.open(testing.allocator, path));
+        const after = try std.Io.Dir.cwd().readFileAlloc(io, path, testing.allocator, .unlimited);
+        defer testing.allocator.free(after);
+        try testing.expectEqualSlices(u8, before, after);
+    }
+}
+
 test "second commit supersedes the first on reopen" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -154,13 +182,13 @@ test "second commit supersedes the first on reopen" {
         var writeTransaction1 = try database.beginWrite();
         const allocation = try writeTransaction1.alloc(4);
         @memcpy(allocation.bytes, "v1__");
-        writeTransaction1.setRoot(allocation.reference);
+        writeTransaction1.setRoot(allocation.reference, .blob);
         _ = try writeTransaction1.commit();
 
         var writeTransaction2 = try database.beginWrite();
         const allocationB = try writeTransaction2.alloc(4);
         @memcpy(allocationB.bytes, "v2!!");
-        writeTransaction2.setRoot(allocationB.reference);
+        writeTransaction2.setRoot(allocationB.reference, .blob);
         _ = try writeTransaction2.commit();
     }
     {
@@ -183,7 +211,7 @@ test "a reader pinned to an old version still reads its data after the writer re
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "AAAAAAAA");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -195,7 +223,7 @@ test "a reader pinned to an old version still reads its data after the writer re
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BBBBBBBB");
         try writeTransaction.free(reader.root(), 8);
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -219,7 +247,7 @@ test "freed space is reused only after the pinning reader releases" {
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "AAAAAAAA");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     var reader = try database.beginRead();
@@ -230,7 +258,7 @@ test "freed space is reused only after the pinning reader releases" {
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BBBBBBBB");
         try writeTransaction.free(oldRoot, 8);
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -264,7 +292,7 @@ test "after a data-barrier flush failure, the reopened database passes verifyInt
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BASELINE");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     {
@@ -274,7 +302,7 @@ test "after a data-barrier flush failure, the reopened database passes verifyInt
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "NEWERVAL");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         try testing.expectError(error.Durability, writeTransaction.commit());
     }
     {
@@ -298,7 +326,7 @@ test "after a header-flush failure, the reopened database passes verifyIntegrity
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BASELINE");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
     {
@@ -308,7 +336,7 @@ test "after a header-flush failure, the reopened database passes verifyIntegrity
         var writeTransaction = try database.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "NEWERVAL");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         try testing.expectError(error.Durability, writeTransaction.commit());
     }
     {
@@ -332,7 +360,7 @@ test "a writer does not reuse space a reader in another instance still pins" {
         var writeTransaction = try databaseA.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "AAAAAAAA");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -348,7 +376,7 @@ test "a writer does not reuse space a reader in another instance still pins" {
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BBBBBBBB");
         try writeTransaction.free(pinnedRoot, 8);
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -388,7 +416,7 @@ test "an abandoned writer releases the lock and never publishes" {
         var writeTransaction = try databaseA.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "BASELINE");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -396,7 +424,7 @@ test "an abandoned writer releases the lock and never publishes" {
         var writeTransaction = try databaseA.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "DROPPED!");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         writeTransaction.deinit();
     }
 
@@ -405,7 +433,7 @@ test "an abandoned writer releases the lock and never publishes" {
         var writeTransaction = try databaseB.beginWrite();
         const allocation = try writeTransaction.alloc(8);
         @memcpy(allocation.bytes, "SECONDWR");
-        writeTransaction.setRoot(allocation.reference);
+        writeTransaction.setRoot(allocation.reference, .blob);
         _ = try writeTransaction.commit();
     }
 
@@ -431,7 +459,7 @@ test "a database grown well past the initial size reopens and verifies" {
             @memset(allocation.bytes, @intCast(index & 0xff));
             root = allocation.reference;
         }
-        writeTransaction.setRoot(root);
+        writeTransaction.setRoot(root, .blob);
         _ = try writeTransaction.commit();
     }
     {
@@ -443,4 +471,35 @@ test "a database grown well past the initial size reopens and verifies" {
         try testing.expectEqual(@as(u8, @intCast(599 & 0xff)), got[0]);
         readTransaction.end();
     }
+}
+
+fn expectExactDecls(comptime T: type, comptime expected: []const []const u8) !void {
+    @setEvalBranchQuota(10000);
+    inline for (comptime std.meta.declarations(T)) |declName| {
+        comptime var found = false;
+        inline for (expected) |name| {
+            if (comptime std.mem.eql(u8, declName, name)) found = true;
+        }
+        if (!found) {
+            std.debug.print("unexpected decl: {s}\n", .{declName});
+            return error.UnexpectedDecl;
+        }
+    }
+    inline for (expected) |name| {
+        if (!@hasDecl(T, name)) {
+            std.debug.print("missing decl: {s}\n", .{name});
+            return error.MissingDecl;
+        }
+    }
+}
+
+test "airdb_internal exports the application API plus the four helpers and not internal" {
+    try expectExactDecls(airdb, &.{
+        "Database",          "ReadTransaction", "WriteTransaction", "Reference",
+        "typeDirectory",     "typeRouting",     "catalog",          "objects",
+        "query",             "blob",            "collections",      "links",
+        "bulk",              "migrations",      "maintenance",      "verification",
+        "compaction",        "RootKind",        "rows",             "FailingSyncer",
+        "peakResidentBytes", "pageFaults",
+    });
 }

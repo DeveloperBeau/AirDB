@@ -140,7 +140,7 @@ test "bulk append frees the replaced right-edge nodes" {
         var catalogReference = try catalog.create(&writeTransaction, 2);
         var primaryKey: u64 = 0;
         while (primaryKey < 200) : (primaryKey += 1) catalogReference = (try rawRows.insert(&writeTransaction, catalogReference, &.{ primaryKey, primaryKey })).catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
 
@@ -382,7 +382,7 @@ test "bulkImport equals row-by-row for a scalar indexed type" {
         const catalog0 = try typeDirectory.catalogReference(&writeTransaction, directoryReference, 0);
         const newCatalog = try bulkImport(&writeTransaction, catalog0, rowSlices, .{});
         const newDirectoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, 0, newCatalog);
-        writeTransaction.setRoot(newDirectoryReference);
+        writeTransaction.setRoot(newDirectoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
         try verification.verifyIntegrity(&database); // both value-index directions, in memory
     }
@@ -395,7 +395,7 @@ test "bulkImport equals row-by-row for a scalar indexed type" {
         var catalogReference = try catalog.createFromDefinitions(&writeTransaction, &importDefinitions);
         var primaryKey: u64 = 0;
         while (primaryKey < N) : (primaryKey += 1) catalogReference = (try rawRows.insert(&writeTransaction, catalogReference, &.{ primaryKey, primaryKey * 3, primaryKey % 50 })).catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
 
@@ -566,7 +566,7 @@ test "bulkImport on a type with an indexed blob property writes nothing: arena u
     // verifyIntegrity passes after commit.
     const inserted = try objects.insertTyped(&writeTransaction, catalogReference, &.{ .{ .int = 1 }, .{ .bytes = "hello" } });
     const newDirectoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, 0, inserted.catalogReference);
-    writeTransaction.setRoot(newDirectoryReference);
+    writeTransaction.setRoot(newDirectoryReference, .typeDirectory);
     _ = try writeTransaction.commit();
     try verification.verifyIntegrity(&database);
 }
@@ -618,7 +618,7 @@ test "bulkImport edge sizes: empty, single, leafCap" {
             const catalog0 = try typeDirectory.catalogReference(&writeTransaction, directoryReference, 0);
             const newCatalog = try bulkImport(&writeTransaction, catalog0, rowSlices, .{ .presorted = true });
             const newDirectoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, 0, newCatalog);
-            writeTransaction.setRoot(newDirectoryReference);
+            writeTransaction.setRoot(newDirectoryReference, .typeDirectory);
             _ = try writeTransaction.commit();
         }
         try verification.verifyIntegrity(&database);
@@ -682,7 +682,7 @@ test "bulkAppend equals row-by-row for a contiguous monotonic batch" {
         while (primaryKey < BASE) : (primaryKey += 1) catalogReference = (try rawRows.insert(&writeTransaction, catalogReference, &.{ primaryKey, primaryKey * 3 })).catalogReference;
         const newCatalog = try bulkAppend(&writeTransaction, catalogReference, batch);
         const newDirectoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, 0, newCatalog);
-        writeTransaction.setRoot(newDirectoryReference);
+        writeTransaction.setRoot(newDirectoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
         try verification.verifyIntegrity(&database);
     }
@@ -695,7 +695,7 @@ test "bulkAppend equals row-by-row for a contiguous monotonic batch" {
         var catalogReference = try catalog.createFromDefinitions(&writeTransaction, &appendDefinitions);
         var primaryKey: u64 = 0;
         while (primaryKey < TOTAL) : (primaryKey += 1) catalogReference = (try rawRows.insert(&writeTransaction, catalogReference, &.{ primaryKey, primaryKey * 3 })).catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
 
@@ -857,7 +857,7 @@ test "bulkAppendOrInsert falls back and equals row-by-row for a scattered batch"
         while (primaryKey < BASE) : (primaryKey += 1) catalogReference = (try rawRows.insert(&writeTransaction, catalogReference, &.{ primaryKey, primaryKey * 3 })).catalogReference;
         const newCatalog = try bulkAppendOrInsert(&writeTransaction, catalogReference, &batch);
         const newDirectoryReference = try typeDirectory.setCatalogReference(&writeTransaction, directoryReference, 0, newCatalog);
-        writeTransaction.setRoot(newDirectoryReference);
+        writeTransaction.setRoot(newDirectoryReference, .typeDirectory);
         _ = try writeTransaction.commit();
         try verification.verifyIntegrity(&database);
     }
@@ -872,7 +872,7 @@ test "bulkAppendOrInsert falls back and equals row-by-row for a scattered batch"
         var primaryKey: u64 = 0;
         while (primaryKey < BASE) : (primaryKey += 1) catalogReference = (try rawRows.insert(&writeTransaction, catalogReference, &.{ primaryKey, primaryKey * 3 })).catalogReference;
         for (scatteredPrimaryKeys) |scatteredPrimaryKey| catalogReference = (try rawRows.insert(&writeTransaction, catalogReference, &.{ scatteredPrimaryKey, scatteredPrimaryKey * 3 })).catalogReference;
-        writeTransaction.setRoot(catalogReference);
+        writeTransaction.setRoot(catalogReference, .catalog);
         _ = try writeTransaction.commit();
     }
 
