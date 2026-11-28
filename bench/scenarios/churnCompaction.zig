@@ -20,7 +20,7 @@ const harness = @import("../harness.zig");
 const Io = std.Io;
 const Reference = airdb.Reference;
 const catalog = airdb.catalog;
-const rows = airdb.rows;
+const rows = airdb.internal.rows;
 const compaction = airdb.compaction;
 
 pub const name = "churn_compaction";
@@ -191,7 +191,7 @@ pub fn run(ctx: *harness.Ctx) !harness.Result {
         .maxNs = stepLat.percentile(100),
         .fileBytes = try database.fileSize(),
         .logicalBytes = database.logicalSize(),
-        .peakRssBytes = airdb.peakResidentBytes(),
+        .peakRssBytes = airdb.internal.peakResidentBytes(),
         .note = note,
     };
 }
