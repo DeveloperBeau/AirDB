@@ -103,6 +103,8 @@ pub fn build(b: *std.Build) void {
         .linkage = .static,
     });
     b.installArtifact(lib);
+    // The C header is installed alongside the library.
+    lib.installHeader(b.path("include/airdb.h"), "airdb.h");
 
     // C smoke test: compile tests/cApiSmoke.c against include/airdb.h, link the
     // static library, and run it. Proves the C ABI is callable end to end. Its
@@ -123,5 +125,36 @@ pub fn build(b: *std.Build) void {
         });
         const run_c_smoke = b.addRunArtifact(c_smoke);
         test_step.dependOn(&run_c_smoke.step);
+    }
+
+    const packaging_check = b.option(bool, "packaging_check", "Check the installed C header and a .paths-only package tree") orelse true;
+    if (packaging_check) {
+        const check_mod = b.createModule(.{
+            .root_source_file = b.path("tests/packagingCheck.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        });
+        const check_exe = b.addExecutable(.{ .name = "packagingCheck", .root_module = check_mod });
+
+        // The installed header must match include/airdb.h.
+        const run_header = b.addRunArtifact(check_exe);
+        run_header.setName("check installed airdb.h");
+        run_header.addArg("header");
+        run_header.addFileArg(b.path("include/airdb.h"));
+        run_header.addDirectoryArg(.{ .relative = .{ .base = .install_prefix, .sub_path = "" } });
+        run_header.step.dependOn(b.getInstallStep());
+        test_step.dependOn(&run_header.step);
+
+        // A tree holding only the .paths entries must build and pass its tests.
+        const run_paths = b.addRunArtifact(check_exe);
+        run_paths.setName("check .paths-only package tree");
+        run_paths.addArg("paths");
+        run_paths.addFileArg(std.Build.LazyPath.zig_exe);
+        run_paths.addDirectoryArg(b.path("."));
+        run_paths.addDirectoryArg(.{ .relative = .{ .base = .local_cache, .sub_path = "" } });
+        run_paths.addDirectoryArg(.{ .relative = .{ .base = .global_cache, .sub_path = "" } });
+        inline for (@import("build.zig.zon").paths) |entry| run_paths.addArg(entry);
+        run_paths.has_side_effects = true;
+        test_step.dependOn(&run_paths.step);
     }
 }
