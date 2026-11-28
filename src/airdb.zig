@@ -1,6 +1,5 @@
 //! The airdb library root: the application API (Database, transactions,
-//! records, schema, maintenance) plus one marked `internal` namespace for
-//! this repository's tests and benchmarks.
+//! records, schema, maintenance).
 
 /// One process's handle to a database file.
 pub const Database = @import("database.zig").Database;
@@ -40,18 +39,6 @@ pub const compaction = @import("storage/compaction.zig");
 pub const maintenance = @import("maintenance.zig");
 /// Offline integrity audit.
 pub const verification = @import("verification.zig");
-
-/// Test and bench helpers for this repository; not part of the application API.
-pub const internal = struct {
-    /// Raw row CRUD over the catalog's columns and indexes.
-    pub const rows = @import("records/rows.zig");
-    /// Test syncer that fails a chosen flush to simulate a crash.
-    pub const FailingSyncer = @import("storage/syncer.zig").FailingSyncer;
-    /// Peak resident set size of the current process, in bytes.
-    pub const peakResidentBytes = @import("platform.zig").peakResidentBytes;
-    /// Cumulative minor/major page-fault counts.
-    pub const pageFaults = @import("platform.zig").pageFaults;
-};
 
 // Every module is reached here so test discovery does not depend on a pub
 // re-export. The architecture import scanner skips top-level test blocks.
